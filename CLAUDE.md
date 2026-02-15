@@ -13,6 +13,7 @@ Rust library for building LLM agents. See `specs/DESIGN_DOC.md` for full design.
 membrane/
 ├── membrane-core/       # Core traits, types, agent loop, re-exports macro
 ├── membrane-macros/     # Proc macro crate (#[membrane_tool])
+├── membrane-openai/     # OpenAI Chat Completions API provider
 └── specs/DESIGN_DOC.md  # Design document
 ```
 
@@ -25,6 +26,10 @@ membrane/
   - `agent.rs` — Agent with ReAct loop (`run`, `run_structured`)
   - `error.rs` — Error enum
 - **membrane-macros**: `#[membrane_tool]` attribute macro for Tool generation
+- **membrane-openai**: OpenAI provider implementing `LlmProvider`
+  - `types.rs` — Internal serde types matching OpenAI wire format
+  - `convert.rs` — Bidirectional conversion (membrane-core ↔ OpenAI)
+  - `lib.rs` — `OpenAiProvider` (builder pattern), `TokenProvider` trait
 - `extern crate self as membrane_core;` in lib.rs enables macro-generated `membrane_core::` paths to resolve inside the crate itself
 
 ## Commands
@@ -54,3 +59,5 @@ cargo test -p membrane-core
 - Agent takes `Vec<Message>` as input — no built-in memory management
 - Observability via `tracing` crate spans (`agent.run` → `iteration` → `llm.chat` / `tool.exec`)
 - Structured output uses `schemars::JsonSchema` for automatic JSON Schema generation
+- Provider crates use builder pattern for construction (e.g. `OpenAiProvider::builder().api_key("...").build()`)
+- `TokenProvider` trait enables dynamic auth (e.g. Azure AD token refresh)

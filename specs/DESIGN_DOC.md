@@ -251,13 +251,16 @@ pub enum Error {
 - ReAct ループの実装
 - AgentOutput, AgentStep
 
-### Phase 3: OpenAI Provider 実装
+### Phase 3: OpenAI Provider 実装 ✅
 - membrane-openai クレート（Chat Completions API）
+- Builder パターンによる構築 (`OpenAiProvider::builder().api_key("...").build()`)
+- `TokenProvider` trait で動的トークン取得に対応（Azure AD 等）
+- 内部型 (`types.rs`) + 変換層 (`convert.rs`) で membrane-core ↔ OpenAI wire format を分離
+- wiremock ベースのテスト（実 API キー不要）
 
 ### Phase 4: 拡張
 - membrane-anthropic クレート（Messages API）
 - Streaming 対応
-- Tool の derive マクロ / schemars 連携
 - Memory 抽象化（必要になった場合）
 - Multi-agent 対応
 
@@ -266,6 +269,6 @@ pub enum Error {
 ## Open Questions
 
 1. **Streaming**: Phase 1 では non-streaming のみ。Streaming は `Stream` trait で返す想定だが、runtime 非依存との兼ね合いをどうするか（`futures::Stream` を使うか）
-2. **Tool の型安全性**: 現状は `serde_json::Value` ベース。proc macro で型安全な Tool 定義を自動生成する価値はあるか
-3. **Agent の構成パターン**: Builder パターン vs 構造体直接構築 vs config ファイル
+2. ~~**Tool の型安全性**~~: `#[membrane_tool]` proc macro で解決済み。schemars 連携で JSON Schema を自動生成
+3. ~~**Agent の構成パターン**~~: Provider は Builder パターンを採用。Agent は構造体直接構築（AgentConfig）
 4. **Multi-agent**: 複数 Agent の連携（chain, parallel, supervisor パターン）は Phase 4 以降の検討事項
