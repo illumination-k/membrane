@@ -18,10 +18,10 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
+    /// Provider-specific parameters merged into the API request JSON.
+    /// Use this for `max_tokens`, `temperature`, `max_completion_tokens`, etc.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty", flatten)]
+    pub extra_params: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

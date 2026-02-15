@@ -82,8 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AgentConfig {
             model: "gpt-5-nano".to_string(),
             max_iterations: 10,
-            max_tokens: Some(1024),
-            temperature: Some(0.7),
+            extra_params: serde_json::json!({
+                "max_completion_tokens": 1024,
+            })
+            .as_object()
+            .expect("extra_params must be a JSON object")
+            .clone(),
         },
         "You are a helpful assistant. Use the available tools to answer questions.",
     );

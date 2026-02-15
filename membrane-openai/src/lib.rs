@@ -196,8 +196,7 @@ mod tests {
             messages: vec![Message::user("Hi")],
             tools: vec![],
             response_format: None,
-            max_tokens: None,
-            temperature: None,
+            extra_params: serde_json::Map::new(),
         };
 
         let response = provider.chat(request).await.expect("should succeed");
@@ -250,8 +249,7 @@ mod tests {
             messages: vec![Message::user("Search for rust")],
             tools: vec![],
             response_format: None,
-            max_tokens: None,
-            temperature: None,
+            extra_params: serde_json::Map::new(),
         };
 
         let response = provider.chat(request).await.expect("should succeed");
@@ -290,8 +288,7 @@ mod tests {
             messages: vec![Message::user("Hi")],
             tools: vec![],
             response_format: None,
-            max_tokens: None,
-            temperature: None,
+            extra_params: serde_json::Map::new(),
         };
 
         let result = provider.chat(request).await;
@@ -329,8 +326,7 @@ mod tests {
             messages: vec![Message::user("Hi")],
             tools: vec![],
             response_format: None,
-            max_tokens: None,
-            temperature: None,
+            extra_params: serde_json::Map::new(),
         };
 
         let response = provider.chat(request).await.expect("should succeed");

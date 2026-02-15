@@ -28,8 +28,7 @@ pub(crate) fn to_openai_request(request: ChatRequest) -> Result<OpenAiRequest, E
         messages,
         tools,
         response_format,
-        max_tokens: request.max_tokens,
-        temperature: request.temperature,
+        extra: request.extra_params,
     })
 }
 
@@ -459,6 +458,13 @@ mod tests {
 
     #[test]
     fn full_request_conversion() {
+        let mut extra_params = serde_json::Map::new();
+        extra_params.insert(
+            "max_completion_tokens".to_string(),
+            serde_json::Value::Number(1000.into()),
+        );
+        extra_params.insert("temperature".to_string(), serde_json::json!(0.7));
+
         let request = ChatRequest {
             model: "gpt-4".to_string(),
             messages: vec![Message::system("Be helpful"), Message::user("Hi")],
@@ -468,8 +474,7 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object"}),
             }],
             response_format: None,
-            max_tokens: Some(1000),
-            temperature: Some(0.7),
+            extra_params,
         };
 
         let result = to_openai_request(request).expect("should convert");
@@ -478,7 +483,7 @@ mod tests {
         assert!(result.tools.is_some());
         assert_eq!(result.tools.as_ref().map(|t| t.len()), Some(1));
         assert!(result.response_format.is_none());
-        assert_eq!(result.max_tokens, Some(1000));
-        assert_eq!(result.temperature, Some(0.7));
+        assert_eq!(result.extra["max_completion_tokens"], 1000);
+        assert_eq!(result.extra["temperature"], 0.7);
     }
 }

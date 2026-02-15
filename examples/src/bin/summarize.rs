@@ -39,8 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AgentConfig {
             model: "gpt-4o".to_string(),
             max_iterations: 20,
-            max_tokens: Some(4096),
-            temperature: Some(0.0),
+            extra_params: serde_json::json!({
+                "max_completion_tokens": 4096,
+                "temperature": 0.0,
+            })
+            .as_object()
+            .expect("extra_params must be a JSON object")
+            .clone(),
         },
         SYSTEM_PROMPT,
     );

@@ -12,8 +12,9 @@ use crate::tool::Tool;
 pub struct AgentConfig {
     pub model: String,
     pub max_iterations: usize,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
+    /// Provider-specific parameters merged into each API request.
+    /// Use this for `max_tokens`, `temperature`, `max_completion_tokens`, etc.
+    pub extra_params: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct Agent<P: LlmProvider> {
@@ -166,8 +167,7 @@ impl<P: LlmProvider> Agent<P> {
                 messages: messages_to_send,
                 tools: tool_definitions.clone(),
                 response_format: response_format.clone(),
-                max_tokens: self.config.max_tokens,
-                temperature: self.config.temperature,
+                extra_params: self.config.extra_params.clone(),
             };
 
             let message_count = request.messages.len();
@@ -340,8 +340,7 @@ mod tests {
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 10,
-                max_tokens: None,
-                temperature: None,
+                extra_params: serde_json::Map::new(),
             },
         );
 
@@ -390,8 +389,7 @@ mod tests {
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 10,
-                max_tokens: None,
-                temperature: None,
+                extra_params: serde_json::Map::new(),
             },
         );
 
@@ -432,8 +430,7 @@ mod tests {
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 3,
-                max_tokens: None,
-                temperature: None,
+                extra_params: serde_json::Map::new(),
             },
         );
 
