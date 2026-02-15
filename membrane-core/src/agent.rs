@@ -309,7 +309,7 @@ mod tests {
             },
         );
 
-        let output = agent.run(vec![Message::user("Hi")]).await.unwrap();
+        let output = agent.run(vec![Message::user("Hi")]).await.expect("test");
         assert_eq!(output.response, "Hello!");
         assert_eq!(output.steps.len(), 1);
         assert_eq!(output.total_usage.input_tokens, 10);
@@ -360,7 +360,10 @@ mod tests {
             },
         );
 
-        let output = agent.run(vec![Message::user("Echo world")]).await.unwrap();
+        let output = agent
+            .run(vec![Message::user("Echo world")])
+            .await
+            .expect("test");
         assert_eq!(output.response, "The echo said: world");
         // 2 LLM calls + 1 tool execution = 3 steps
         assert_eq!(output.steps.len(), 3);
@@ -440,7 +443,7 @@ mod tests {
             let result = tool
                 .execute(serde_json::json!({"name": "World"}))
                 .await
-                .unwrap();
+                .expect("test");
             assert_eq!(result, "Hello, World!");
         }
     }

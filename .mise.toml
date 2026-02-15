@@ -1,0 +1,4 @@
+[tools]
+dprint = "latest"
+prek = "latest"
+just = "latest"

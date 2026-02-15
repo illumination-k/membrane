@@ -65,8 +65,8 @@ mod tests {
     #[test]
     fn message_roundtrip_serialization() {
         let msg = Message::user("Hello");
-        let json = serde_json::to_string(&msg).unwrap();
-        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&msg).expect("test");
+        let deserialized: Message = serde_json::from_str(&json).expect("test");
         assert_eq!(deserialized.role, Role::User);
     }
 
@@ -77,7 +77,7 @@ mod tests {
             name: "search".to_string(),
             input: serde_json::json!({"query": "rust"}),
         };
-        let json = serde_json::to_string(&content).unwrap();
+        let json = serde_json::to_string(&content).expect("test");
         assert!(json.contains("\"type\":\"tool_use\""));
     }
 }
