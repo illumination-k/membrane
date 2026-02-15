@@ -29,10 +29,21 @@ membrane/
 
 ## Commands
 
+Task runner is `just` (installed via mise). Prefer `just` over raw cargo commands.
+
 ```sh
-cargo build          # Build all crates
-cargo test           # Run all tests
-cargo test -p membrane-core  # Test core only
+just fmt             # Format (cargo fmt + dprint)
+just fmt-check       # Check formatting without modifying
+just lint            # Run clippy (--all-targets -D warnings)
+just check           # fmt-check + lint
+just test            # Run all tests
+just build           # Build all crates
+```
+
+For crate-scoped operations, use cargo directly:
+
+```sh
+cargo test -p membrane-core
 ```
 
 ## Key Patterns
