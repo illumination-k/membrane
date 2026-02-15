@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
+  "examples",
   "membrane-core",
   "membrane-macros",
   "membrane-openai",
-  "examples",
+  "membrane-tools",
 ]
 
 [workspace.lints.clippy]

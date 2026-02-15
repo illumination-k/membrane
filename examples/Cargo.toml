@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 membrane-core = { path = "../membrane-core" }
 membrane-openai = { path = "../membrane-openai" }
+membrane-tools = { path = "../membrane-tools" }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2,6 +2,7 @@ use membrane_core::agent::{Agent, AgentConfig};
 use membrane_core::membrane_tool;
 use membrane_core::message::Message;
 use membrane_openai::OpenAiProvider;
+use membrane_tools::{ReadFileTool, SearchFilesTool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -13,7 +14,10 @@ struct GetWeatherInput {
     city: String,
 }
 
-#[membrane_tool(name = "get_weather", description = "Get the current weather for a city")]
+#[membrane_tool(
+    name = "get_weather",
+    description = "Get the current weather for a city"
+)]
 async fn get_weather(input: GetWeatherInput) -> Result<String, membrane_core::error::Error> {
     // Simulated weather data for demonstration
     let weather = match input.city.to_lowercase().as_str() {
@@ -36,7 +40,10 @@ struct CalculateInput {
     op: String,
 }
 
-#[membrane_tool(name = "calculate", description = "Perform basic arithmetic (add, sub, mul, div)")]
+#[membrane_tool(
+    name = "calculate",
+    description = "Perform basic arithmetic (add, sub, mul, div)"
+)]
 async fn calculate(input: CalculateInput) -> Result<String, membrane_core::error::Error> {
     let result = match input.op.as_str() {
         "add" => input.a + input.b,
@@ -59,14 +66,19 @@ async fn calculate(input: CalculateInput) -> Result<String, membrane_core::error
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY environment variable must be set");
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY environment variable must be set");
 
     let provider = OpenAiProvider::builder().api_key(api_key).build();
 
     let agent = Agent::new(
         provider,
-        vec![Box::new(GetWeatherTool), Box::new(CalculateTool)],
+        vec![
+            Box::new(GetWeatherTool),
+            Box::new(CalculateTool),
+            Box::new(ReadFileTool),
+            Box::new(SearchFilesTool),
+        ],
         AgentConfig {
             model: "gpt-5-nano".to_string(),
             max_iterations: 10,
@@ -81,8 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let output = agent
         .run(vec![Message::user(
-            "What's the weather like in Tokyo and London? \
-             Also, what is 42 * 17?",
+            "Search for all .rs files under membrane-tools/src/ and then read the contents of lib.rs from the results.",
         )])
         .await?;
 
