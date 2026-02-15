@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!();
+    println!("Stop reason: {:?}", output.stop_reason);
     println!(
         "Total usage: {} input tokens, {} output tokens",
         output.total_usage.input_tokens, output.total_usage.output_tokens,

@@ -6,6 +6,7 @@ use crate::context::{ContextBuilder, DefaultContextBuilder};
 use crate::error::Error;
 use crate::message::{Content, Message, Role};
 use crate::provider::{ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage};
+use crate::stop_condition::{AgentStopReason, StopCondition, StopContext};
 use crate::tool::Tool;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub struct Agent<P: LlmProvider> {
     tools: Vec<Box<dyn Tool>>,
     config: AgentConfig,
     context_builder: Box<dyn ContextBuilder>,
+    stop_conditions: Vec<Box<dyn StopCondition>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +31,7 @@ pub struct AgentOutput {
     pub response: String,
     pub steps: Vec<AgentStep>,
     pub total_usage: Usage,
+    pub stop_reason: AgentStopReason,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +39,7 @@ pub struct StructuredAgentOutput<O> {
     pub response: O,
     pub steps: Vec<AgentStep>,
     pub total_usage: Usage,
+    pub stop_reason: AgentStopReason,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +68,25 @@ impl<P: LlmProvider> Agent<P> {
             tools,
             config,
             context_builder,
+            stop_conditions: Vec::new(),
         }
+    }
+
+    /// Add a single stop condition to this agent.
+    ///
+    /// Stop conditions are checked after each iteration (after tool execution).
+    /// If any condition fires, the loop terminates with `AgentStopReason::StopCondition`.
+    /// Multiple conditions act as OR — any one firing causes a stop.
+    /// Use `.or()` / `.and()` on the trait for composing conditions before adding.
+    pub fn with_stop_condition(mut self, condition: impl StopCondition + 'static) -> Self {
+        self.stop_conditions.push(Box::new(condition));
+        self
+    }
+
+    /// Add multiple stop conditions to this agent.
+    pub fn with_stop_conditions(mut self, conditions: Vec<Box<dyn StopCondition>>) -> Self {
+        self.stop_conditions = conditions;
+        self
     }
 
     /// Create a new agent with a simple system prompt.
@@ -99,13 +121,15 @@ impl<P: LlmProvider> Agent<P> {
     /// Run the ReAct loop with the given messages and return a text response.
     #[tracing::instrument(skip_all, fields(model = %self.config.model))]
     pub async fn run(&self, messages: Vec<Message>) -> Result<AgentOutput, Error> {
-        let (response_content, steps, total_usage) = self.react_loop(messages, None).await?;
+        let (response_content, steps, total_usage, stop_reason) =
+            self.react_loop(messages, None).await?;
 
         let response = extract_text(&response_content);
         Ok(AgentOutput {
             response,
             steps,
             total_usage,
+            stop_reason,
         })
     }
 
@@ -125,7 +149,7 @@ impl<P: LlmProvider> Agent<P> {
             schema: schema_value,
         };
 
-        let (response_content, steps, total_usage) =
+        let (response_content, steps, total_usage, stop_reason) =
             self.react_loop(messages, Some(response_format)).await?;
 
         let text = extract_text(&response_content);
@@ -135,6 +159,7 @@ impl<P: LlmProvider> Agent<P> {
             response,
             steps,
             total_usage,
+            stop_reason,
         })
     }
 
@@ -143,13 +168,15 @@ impl<P: LlmProvider> Agent<P> {
         &self,
         messages: Vec<Message>,
         response_format: Option<ResponseFormat>,
-    ) -> Result<(Vec<Content>, Vec<AgentStep>, Usage), Error> {
+    ) -> Result<(Vec<Content>, Vec<AgentStep>, Usage, AgentStopReason), Error> {
         let tool_definitions: Vec<_> = self.tools.iter().map(|t| t.definition()).collect();
 
         let mut conversation = self.context_builder.build_initial(messages);
 
         let mut steps = Vec::new();
         let mut total_usage = Usage::default();
+        let start_time = std::time::Instant::now();
+        let mut last_response_content: Option<Vec<Content>> = None;
 
         for iteration in 0..self.config.max_iterations {
             let span = tracing::info_span!("iteration", index = iteration);
@@ -193,7 +220,12 @@ impl<P: LlmProvider> Agent<P> {
 
             // If the LLM did not request tool use, return the final response
             if response.stop_reason != StopReason::ToolUse {
-                return Ok((response.content, steps, total_usage));
+                return Ok((
+                    response.content,
+                    steps,
+                    total_usage,
+                    AgentStopReason::NaturalStop,
+                ));
             }
 
             // Add the assistant's response to the conversation
@@ -201,6 +233,8 @@ impl<P: LlmProvider> Agent<P> {
                 role: Role::Assistant,
                 content: response.content.clone(),
             });
+
+            last_response_content = Some(response.content.clone());
 
             // Execute each tool call and append results
             for content in &response.content {
@@ -242,11 +276,40 @@ impl<P: LlmProvider> Agent<P> {
                     });
                 }
             }
+
+            // Check user-defined stop conditions
+            let stop_ctx = StopContext {
+                iteration,
+                total_usage: &total_usage,
+                steps: &steps,
+                elapsed: start_time.elapsed(),
+                messages: &conversation,
+            };
+
+            for condition in &self.stop_conditions {
+                if let Some(description) = condition.should_stop(&stop_ctx) {
+                    tracing::info!(%description, "Stop condition triggered");
+                    let content = last_response_content.take().unwrap_or_default();
+                    return Ok((
+                        content,
+                        steps,
+                        total_usage,
+                        AgentStopReason::StopCondition { description },
+                    ));
+                }
+            }
         }
 
-        Err(Error::MaxIterations {
-            max: self.config.max_iterations,
-        })
+        // max_iterations exhausted — not an error, just a stop reason
+        let content = last_response_content.unwrap_or_default();
+        Ok((
+            content,
+            steps,
+            total_usage,
+            AgentStopReason::MaxIterations {
+                max: self.config.max_iterations,
+            },
+        ))
     }
 
     fn find_tool(&self, name: &str) -> Option<&dyn Tool> {
@@ -349,6 +412,7 @@ mod tests {
         assert_eq!(output.steps.len(), 1);
         assert_eq!(output.total_usage.input_tokens, 10);
         assert_eq!(output.total_usage.output_tokens, 5);
+        assert!(matches!(output.stop_reason, AgentStopReason::NaturalStop));
     }
 
     #[tokio::test]
@@ -402,6 +466,7 @@ mod tests {
         assert_eq!(output.steps.len(), 3);
         assert_eq!(output.total_usage.input_tokens, 30);
         assert_eq!(output.total_usage.output_tokens, 18);
+        assert!(matches!(output.stop_reason, AgentStopReason::NaturalStop));
     }
 
     #[tokio::test]
@@ -434,8 +499,14 @@ mod tests {
             },
         );
 
-        let result = agent.run(vec![Message::user("Loop forever")]).await;
-        assert!(matches!(result, Err(Error::MaxIterations { max: 3 })));
+        let output = agent
+            .run(vec![Message::user("Loop forever")])
+            .await
+            .expect("max_iterations is now a stop reason, not an error");
+        assert!(matches!(
+            output.stop_reason,
+            AgentStopReason::MaxIterations { max: 3 }
+        ));
     }
 
     // Test the proc macro

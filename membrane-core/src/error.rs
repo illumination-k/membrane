@@ -8,9 +8,6 @@ pub enum Error {
     #[error("Tool execution error: {tool_name}: {message}")]
     ToolExecution { tool_name: String, message: String },
 
-    #[error("Max iterations ({max}) exceeded")]
-    MaxIterations { max: usize },
-
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -27,7 +24,6 @@ impl From<&Error> for ErrorInfo {
         let kind = match err {
             Error::Provider(_) => "provider",
             Error::ToolExecution { .. } => "tool_execution",
-            Error::MaxIterations { .. } => "max_iterations",
             Error::Serialization(_) => "serialization",
         };
         ErrorInfo {
