@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "membrane-core",
+    "membrane-macros",
 ]
 
 [workspace.dependencies]

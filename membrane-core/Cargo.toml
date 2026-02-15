@@ -9,6 +9,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+membrane-macros = { path = "../membrane-macros" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::message::{Content, Message, Role};
-use crate::provider::{
-    ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage,
-};
+use crate::provider::{ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage};
 use crate::tool::Tool;
 
 #[derive(Debug, Clone)]
@@ -170,8 +168,7 @@ impl<P: LlmProvider> Agent<P> {
             // Execute each tool call and append results
             for content in &response.content {
                 if let Content::ToolUse { id, name, input } = content {
-                    let _tool_span =
-                        tracing::info_span!("tool.exec", tool_name = %name).entered();
+                    let _tool_span = tracing::info_span!("tool.exec", tool_name = %name).entered();
 
                     let (output, is_error) = match self.find_tool(name) {
                         Some(tool) => match tool.execute(input.clone()).await {
@@ -405,5 +402,46 @@ mod tests {
 
         let result = agent.run(vec![Message::user("Loop forever")]).await;
         assert!(matches!(result, Err(Error::MaxIterations { max: 3 })));
+    }
+
+    // Test the proc macro
+    mod macro_tool {
+        use membrane_macros::membrane_tool;
+        use schemars::JsonSchema;
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize, JsonSchema)]
+        struct GreetInput {
+            name: String,
+        }
+
+        #[membrane_tool(name = "greet", description = "Greet someone by name")]
+        async fn greet(input: GreetInput) -> Result<String, membrane_core::error::Error> {
+            Ok(format!("Hello, {}!", input.name))
+        }
+
+        #[test]
+        fn macro_generates_tool_definition() {
+            use crate::tool::Tool;
+
+            let tool = GreetTool;
+            let def = tool.definition();
+            assert_eq!(def.name, "greet");
+            assert_eq!(def.description, "Greet someone by name");
+            // Schema should contain "name" property
+            assert!(def.input_schema.to_string().contains("name"));
+        }
+
+        #[tokio::test]
+        async fn macro_generated_tool_executes() {
+            use crate::tool::Tool;
+
+            let tool = GreetTool;
+            let result = tool
+                .execute(serde_json::json!({"name": "World"}))
+                .await
+                .unwrap();
+            assert_eq!(result, "Hello, World!");
+        }
     }
 }
