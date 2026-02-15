@@ -4,6 +4,7 @@ members = [
   "membrane-core",
   "membrane-macros",
   "membrane-openai",
+  "examples",
 ]
 
 [workspace.lints.clippy]
