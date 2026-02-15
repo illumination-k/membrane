@@ -1,12 +1,18 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 use crate::context::{ContextBuilder, DefaultContextBuilder};
 use crate::error::Error;
 use crate::message::{Content, Message, Role};
 use crate::provider::{ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage};
 use crate::stop_condition::{AgentStopReason, StopCondition, StopContext};
+use crate::sub_agent::{AgentExecutor, SubAgentEntry};
 use crate::tool::Tool;
 
 #[derive(Debug, Clone)]
@@ -21,6 +27,7 @@ pub struct AgentConfig {
 pub struct Agent<P: LlmProvider> {
     provider: P,
     tools: Vec<Box<dyn Tool>>,
+    sub_agents: Vec<SubAgentEntry>,
     config: AgentConfig,
     context_builder: Box<dyn ContextBuilder>,
     stop_conditions: Vec<Box<dyn StopCondition>>,
@@ -54,6 +61,11 @@ pub enum AgentStep {
         output: String,
         is_error: bool,
     },
+    SubAgentExecution {
+        name: String,
+        input: serde_json::Value,
+        output: AgentOutput,
+    },
 }
 
 impl<P: LlmProvider> Agent<P> {
@@ -66,6 +78,7 @@ impl<P: LlmProvider> Agent<P> {
         Self {
             provider,
             tools,
+            sub_agents: Vec::new(),
             config,
             context_builder,
             stop_conditions: Vec::new(),
@@ -86,6 +99,24 @@ impl<P: LlmProvider> Agent<P> {
     /// Add multiple stop conditions to this agent.
     pub fn with_stop_conditions(mut self, conditions: Vec<Box<dyn StopCondition>>) -> Self {
         self.stop_conditions = conditions;
+        self
+    }
+
+    /// Add a sub-agent to this agent.
+    ///
+    /// Sub-agents are autonomous reasoning entities that the parent agent can
+    /// invoke. They are presented to the LLM as tool definitions but dispatched
+    /// separately from deterministic tools.
+    ///
+    /// The default input schema expects a single `"query"` string parameter.
+    pub fn with_sub_agent(
+        mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        agent: impl AgentExecutor + 'static,
+    ) -> Self {
+        let entry = SubAgentEntry::new(name, description, Arc::new(agent));
+        self.sub_agents.push(entry);
         self
     }
 
@@ -169,7 +200,8 @@ impl<P: LlmProvider> Agent<P> {
         messages: Vec<Message>,
         response_format: Option<ResponseFormat>,
     ) -> Result<(Vec<Content>, Vec<AgentStep>, Usage, AgentStopReason), Error> {
-        let tool_definitions: Vec<_> = self.tools.iter().map(|t| t.definition()).collect();
+        let mut tool_definitions: Vec<_> = self.tools.iter().map(|t| t.definition()).collect();
+        tool_definitions.extend(self.sub_agents.iter().map(|sa| sa.to_tool_definition()));
 
         let mut conversation = self.context_builder.build_initial(messages);
 
@@ -179,8 +211,7 @@ impl<P: LlmProvider> Agent<P> {
         let mut last_response_content: Option<Vec<Content>> = None;
 
         for iteration in 0..self.config.max_iterations {
-            let span = tracing::info_span!("iteration", index = iteration);
-            let _enter = span.enter();
+            let iter_span = tracing::info_span!("iteration", index = iteration);
 
             let messages_to_send = if iteration == 0 {
                 conversation.clone()
@@ -199,17 +230,19 @@ impl<P: LlmProvider> Agent<P> {
 
             let message_count = request.messages.len();
 
-            let response = {
-                let _chat_span = tracing::info_span!("llm.chat").entered();
-                let resp = self.provider.chat(request).await?;
-                tracing::info!(
-                    input_tokens = resp.usage.input_tokens,
-                    output_tokens = resp.usage.output_tokens,
-                    stop_reason = ?resp.stop_reason,
-                    "LLM response received"
-                );
-                resp
-            };
+            let response = self
+                .provider
+                .chat(request)
+                .instrument(tracing::info_span!(parent: &iter_span, "llm.chat"))
+                .await?;
+
+            tracing::info!(
+                parent: &iter_span,
+                input_tokens = response.usage.input_tokens,
+                output_tokens = response.usage.output_tokens,
+                stop_reason = ?response.stop_reason,
+                "LLM response received"
+            );
 
             total_usage = total_usage.add(&response.usage);
 
@@ -236,35 +269,93 @@ impl<P: LlmProvider> Agent<P> {
 
             last_response_content = Some(response.content.clone());
 
-            // Execute each tool call and append results
+            // Execute each tool call / sub-agent invocation and append results
             for content in &response.content {
                 if let Content::ToolUse { id, name, input } = content {
-                    let _tool_span = tracing::info_span!("tool.exec", tool_name = %name).entered();
+                    let (output, is_error) = if let Some(tool) = self.find_tool(name) {
+                        // Dispatch to Tool
+                        let result = tool
+                            .execute(input.clone())
+                            .instrument(tracing::info_span!(
+                                parent: &iter_span,
+                                "tool.exec",
+                                tool_name = %name
+                            ))
+                            .await;
 
-                    let (output, is_error) = match self.find_tool(name) {
-                        Some(tool) => match tool.execute(input.clone()).await {
+                        match result {
                             Ok(result) => {
-                                tracing::info!(tool_name = %name, "Tool executed successfully");
+                                tracing::info!(parent: &iter_span, tool_name = %name, "Tool executed successfully");
+                                steps.push(AgentStep::ToolExecution {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    output: result.clone(),
+                                    is_error: false,
+                                });
                                 (result, false)
                             }
                             Err(e) => {
-                                tracing::warn!(tool_name = %name, error = %e, "Tool execution failed");
-                                (e.to_string(), true)
+                                let msg = e.to_string();
+                                tracing::warn!(parent: &iter_span, tool_name = %name, error = %msg, "Tool execution failed");
+                                steps.push(AgentStep::ToolExecution {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    output: msg.clone(),
+                                    is_error: true,
+                                });
+                                (msg, true)
                             }
-                        },
-                        None => {
-                            let msg = format!("Tool '{}' not found", name);
-                            tracing::warn!(%msg);
-                            (msg, true)
                         }
-                    };
+                    } else if let Some(sub_agent) = self.find_sub_agent(name) {
+                        // Dispatch to Sub-Agent
+                        let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                        let messages = vec![Message::user(query)];
 
-                    steps.push(AgentStep::ToolExecution {
-                        name: name.clone(),
-                        input: input.clone(),
-                        output: output.clone(),
-                        is_error,
-                    });
+                        let result = sub_agent
+                            .agent
+                            .run(messages)
+                            .instrument(tracing::info_span!(
+                                parent: &iter_span,
+                                "sub_agent.run",
+                                name = %name
+                            ))
+                            .await;
+
+                        match result {
+                            Ok(agent_output) => {
+                                tracing::info!(
+                                    parent: &iter_span,
+                                    name = %name,
+                                    steps = agent_output.steps.len(),
+                                    "Sub-agent executed successfully"
+                                );
+                                let response_text = agent_output.response.clone();
+                                total_usage = total_usage.add(&agent_output.total_usage);
+                                steps.push(AgentStep::SubAgentExecution {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    output: agent_output,
+                                });
+                                (response_text, false)
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                tracing::warn!(parent: &iter_span, name = %name, error = %msg, "Sub-agent execution failed");
+                                (msg, true)
+                            }
+                        }
+                    } else {
+                        // Neither tool nor sub-agent found
+                        let msg = format!("Tool or sub-agent '{}' not found", name);
+                        tracing::warn!(parent: &iter_span, msg = %msg);
+                        steps.push(AgentStep::ToolExecution {
+                            name: name.clone(),
+                            input: input.clone(),
+                            output: msg.clone(),
+                            is_error: true,
+                        });
+                        (msg, true)
+                    };
 
                     conversation.push(Message {
                         role: Role::User,
@@ -317,6 +408,19 @@ impl<P: LlmProvider> Agent<P> {
             .iter()
             .find(|t| t.definition().name == name)
             .map(|t| t.as_ref())
+    }
+
+    fn find_sub_agent(&self, name: &str) -> Option<&SubAgentEntry> {
+        self.sub_agents.iter().find(|sa| sa.name == name)
+    }
+}
+
+impl<P: LlmProvider> AgentExecutor for Agent<P> {
+    fn run(
+        &self,
+        messages: Vec<Message>,
+    ) -> Pin<Box<dyn Future<Output = Result<AgentOutput, Error>> + Send + '_>> {
+        Box::pin(self.run(messages))
     }
 }
 
@@ -507,6 +611,235 @@ mod tests {
             output.stop_reason,
             AgentStopReason::MaxIterations { max: 3 }
         ));
+    }
+
+    #[tokio::test]
+    async fn agent_sub_agent_execution() {
+        let sub_provider = MockProvider {
+            responses: vec![ChatResponse {
+                content: vec![Content::Text {
+                    text: "Sub-agent researched: Rust is great!".to_string(),
+                }],
+                usage: Usage {
+                    input_tokens: 15,
+                    output_tokens: 10,
+                },
+                stop_reason: StopReason::EndTurn,
+            }],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let sub_agent = Agent::without_system_prompt(
+            sub_provider,
+            vec![],
+            AgentConfig {
+                model: "sub-model".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        );
+
+        let parent_provider = MockProvider {
+            responses: vec![
+                ChatResponse {
+                    content: vec![Content::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "researcher".to_string(),
+                        input: serde_json::json!({"query": "What is Rust?"}),
+                    }],
+                    usage: Usage {
+                        input_tokens: 20,
+                        output_tokens: 15,
+                    },
+                    stop_reason: StopReason::ToolUse,
+                },
+                ChatResponse {
+                    content: vec![Content::Text {
+                        text: "Based on research: Rust is great!".to_string(),
+                    }],
+                    usage: Usage {
+                        input_tokens: 30,
+                        output_tokens: 12,
+                    },
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let parent = Agent::without_system_prompt(
+            parent_provider,
+            vec![],
+            AgentConfig {
+                model: "parent-model".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        )
+        .with_sub_agent("researcher", "Research a topic in depth", sub_agent);
+
+        let output = parent
+            .run(vec![Message::user("Tell me about Rust")])
+            .await
+            .expect("test");
+
+        assert_eq!(output.response, "Based on research: Rust is great!");
+
+        // 2 LLM calls (parent) + 1 sub-agent execution = 3 steps
+        assert_eq!(output.steps.len(), 3);
+
+        // Verify sub-agent step
+        match &output.steps[1] {
+            AgentStep::SubAgentExecution {
+                name,
+                output: sub_output,
+                ..
+            } => {
+                assert_eq!(name, "researcher");
+                assert_eq!(sub_output.response, "Sub-agent researched: Rust is great!");
+                assert_eq!(sub_output.steps.len(), 1);
+            }
+            _ => panic!("Expected SubAgentExecution step"),
+        }
+
+        // Verify token usage accumulation (parent + sub-agent)
+        assert_eq!(output.total_usage.input_tokens, 20 + 30 + 15);
+        assert_eq!(output.total_usage.output_tokens, 15 + 12 + 10);
+    }
+
+    #[tokio::test]
+    async fn agent_sub_agent_error_handling() {
+        struct ErrorExecutor;
+
+        impl crate::sub_agent::AgentExecutor for ErrorExecutor {
+            fn run(
+                &self,
+                _messages: Vec<Message>,
+            ) -> Pin<Box<dyn Future<Output = Result<AgentOutput, Error>> + Send + '_>> {
+                Box::pin(async { Err(Error::Provider("Sub-agent failed".to_string())) })
+            }
+        }
+
+        let parent_provider = MockProvider {
+            responses: vec![
+                ChatResponse {
+                    content: vec![Content::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "failing_agent".to_string(),
+                        input: serde_json::json!({"query": "test"}),
+                    }],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::ToolUse,
+                },
+                ChatResponse {
+                    content: vec![Content::Text {
+                        text: "Sub-agent failed, but I continue".to_string(),
+                    }],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let parent = Agent::without_system_prompt(
+            parent_provider,
+            vec![],
+            AgentConfig {
+                model: "test".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        )
+        .with_sub_agent("failing_agent", "An agent that fails", ErrorExecutor);
+
+        let output = parent.run(vec![Message::user("test")]).await.expect("test");
+
+        assert_eq!(output.response, "Sub-agent failed, but I continue");
+        assert!(matches!(output.stop_reason, AgentStopReason::NaturalStop));
+    }
+
+    #[tokio::test]
+    async fn agent_mixed_tools_and_sub_agents() {
+        let sub_provider = MockProvider {
+            responses: vec![ChatResponse {
+                content: vec![Content::Text {
+                    text: "Researched!".to_string(),
+                }],
+                usage: Usage::default(),
+                stop_reason: StopReason::EndTurn,
+            }],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let sub_agent = Agent::without_system_prompt(
+            sub_provider,
+            vec![],
+            AgentConfig {
+                model: "sub".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        );
+
+        let parent_provider = MockProvider {
+            responses: vec![
+                // Use tool first
+                ChatResponse {
+                    content: vec![Content::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "echo".to_string(),
+                        input: serde_json::json!({"text": "hello"}),
+                    }],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::ToolUse,
+                },
+                // Then use sub-agent
+                ChatResponse {
+                    content: vec![Content::ToolUse {
+                        id: "call_2".to_string(),
+                        name: "researcher".to_string(),
+                        input: serde_json::json!({"query": "research this"}),
+                    }],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::ToolUse,
+                },
+                // Final response
+                ChatResponse {
+                    content: vec![Content::Text {
+                        text: "Done!".to_string(),
+                    }],
+                    usage: Usage::default(),
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let parent = Agent::without_system_prompt(
+            parent_provider,
+            vec![Box::new(EchoTool)],
+            AgentConfig {
+                model: "parent".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        )
+        .with_sub_agent("researcher", "Research", sub_agent);
+
+        let output = parent.run(vec![Message::user("test")]).await.expect("test");
+
+        // 3 LLM calls + 1 tool + 1 sub-agent = 5 steps
+        assert_eq!(output.steps.len(), 5);
+
+        assert!(matches!(output.steps[0], AgentStep::LlmCall { .. }));
+        assert!(matches!(output.steps[1], AgentStep::ToolExecution { .. }));
+        assert!(matches!(output.steps[2], AgentStep::LlmCall { .. }));
+        assert!(matches!(
+            output.steps[3],
+            AgentStep::SubAgentExecution { .. }
+        ));
+        assert!(matches!(output.steps[4], AgentStep::LlmCall { .. }));
     }
 
     // Test the proc macro

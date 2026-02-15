@@ -130,6 +130,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     is_error,
                 );
             }
+            membrane_core::agent::AgentStep::SubAgentExecution { name, output, .. } => {
+                println!(
+                    "Step {}: Sub-agent '{}' response={} (steps={})",
+                    i + 1,
+                    name,
+                    output.response,
+                    output.steps.len(),
+                );
+            }
         }
     }
     println!();

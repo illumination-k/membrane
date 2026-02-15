@@ -45,15 +45,15 @@ membrane/
 
 ## Commands
 
-Task runner is `just` (installed via mise). Prefer `just` over raw cargo commands.
+Task runner is `just` (installed via mise). Prefer `mise exec -- just` over raw cargo commands.
 
 ```sh
-just fmt             # Format (cargo fmt + dprint)
-just fmt-check       # Check formatting without modifying
-just lint            # Run clippy (--all-targets -D warnings)
-just check           # fmt-check + lint
-just test            # Run all tests
-just build           # Build all crates
+mise exec -- just fmt             # Format (cargo fmt + dprint)
+mise exec -- just fmt-check       # Check formatting without modifying
+mise exec -- just lint            # Run clippy (--all-targets -D warnings)
+mise exec -- just check           # fmt-check + lint
+mise exec -- just test            # Run all tests
+mise exec -- just build           # Build all crates
 ```
 
 For crate-scoped operations, use cargo directly:
