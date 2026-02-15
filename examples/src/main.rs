@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let provider = OpenAiProvider::builder().api_key(api_key).build();
 
-    let agent = Agent::new(
+    let agent = Agent::with_system_prompt(
         provider,
         vec![
             Box::new(GetWeatherTool),
@@ -82,13 +82,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AgentConfig {
             model: "gpt-5-nano".to_string(),
             max_iterations: 10,
-            system_prompt: Some(
-                "You are a helpful assistant. Use the available tools to answer questions."
-                    .to_string(),
-            ),
             max_tokens: Some(1024),
             temperature: Some(0.7),
         },
+        "You are a helpful assistant. Use the available tools to answer questions.",
     );
 
     let output = agent

@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::context::{ContextBuilder, DefaultContextBuilder};
 use crate::error::Error;
 use crate::message::{Content, Message, Role};
 use crate::provider::{ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage};
@@ -11,7 +12,6 @@ use crate::tool::Tool;
 pub struct AgentConfig {
     pub model: String,
     pub max_iterations: usize,
-    pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
 }
@@ -20,6 +20,7 @@ pub struct Agent<P: LlmProvider> {
     provider: P,
     tools: Vec<Box<dyn Tool>>,
     config: AgentConfig,
+    context_builder: Box<dyn ContextBuilder>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,12 +52,47 @@ pub enum AgentStep {
 }
 
 impl<P: LlmProvider> Agent<P> {
-    pub fn new(provider: P, tools: Vec<Box<dyn Tool>>, config: AgentConfig) -> Self {
+    pub fn new(
+        provider: P,
+        tools: Vec<Box<dyn Tool>>,
+        config: AgentConfig,
+        context_builder: Box<dyn ContextBuilder>,
+    ) -> Self {
         Self {
             provider,
             tools,
             config,
+            context_builder,
         }
+    }
+
+    /// Create a new agent with a simple system prompt.
+    pub fn with_system_prompt(
+        provider: P,
+        tools: Vec<Box<dyn Tool>>,
+        config: AgentConfig,
+        system_prompt: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            provider,
+            tools,
+            config,
+            Box::new(DefaultContextBuilder::new(system_prompt)),
+        )
+    }
+
+    /// Create a new agent without a system prompt.
+    pub fn without_system_prompt(
+        provider: P,
+        tools: Vec<Box<dyn Tool>>,
+        config: AgentConfig,
+    ) -> Self {
+        Self::new(
+            provider,
+            tools,
+            config,
+            Box::new(DefaultContextBuilder::default()),
+        )
     }
 
     /// Run the ReAct loop with the given messages and return a text response.
@@ -109,13 +145,7 @@ impl<P: LlmProvider> Agent<P> {
     ) -> Result<(Vec<Content>, Vec<AgentStep>, Usage), Error> {
         let tool_definitions: Vec<_> = self.tools.iter().map(|t| t.definition()).collect();
 
-        let mut conversation = Vec::new();
-
-        // Prepend system prompt if configured
-        if let Some(ref system_prompt) = self.config.system_prompt {
-            conversation.push(Message::system(system_prompt));
-        }
-        conversation.extend(messages);
+        let mut conversation = self.context_builder.build_initial(messages);
 
         let mut steps = Vec::new();
         let mut total_usage = Usage::default();
@@ -124,9 +154,16 @@ impl<P: LlmProvider> Agent<P> {
             let span = tracing::info_span!("iteration", index = iteration);
             let _enter = span.enter();
 
+            let messages_to_send = if iteration == 0 {
+                conversation.clone()
+            } else {
+                self.context_builder
+                    .build_iteration(&conversation, iteration)
+            };
+
             let request = ChatRequest {
                 model: self.config.model.clone(),
-                messages: conversation.clone(),
+                messages: messages_to_send,
                 tools: tool_definitions.clone(),
                 response_format: response_format.clone(),
                 max_tokens: self.config.max_tokens,
@@ -297,13 +334,12 @@ mod tests {
             call_count: AtomicUsize::new(0),
         };
 
-        let agent = Agent::new(
+        let agent = Agent::without_system_prompt(
             provider,
             vec![],
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 10,
-                system_prompt: None,
                 max_tokens: None,
                 temperature: None,
             },
@@ -348,13 +384,12 @@ mod tests {
             call_count: AtomicUsize::new(0),
         };
 
-        let agent = Agent::new(
+        let agent = Agent::without_system_prompt(
             provider,
             vec![Box::new(EchoTool)],
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 10,
-                system_prompt: None,
                 max_tokens: None,
                 temperature: None,
             },
@@ -391,13 +426,12 @@ mod tests {
             call_count: AtomicUsize::new(0),
         };
 
-        let agent = Agent::new(
+        let agent = Agent::without_system_prompt(
             provider,
             vec![Box::new(EchoTool)],
             AgentConfig {
                 model: "test-model".to_string(),
                 max_iterations: 3,
-                system_prompt: None,
                 max_tokens: None,
                 temperature: None,
             },

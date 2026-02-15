@@ -133,26 +133,45 @@ pub trait Tool: Send + Sync {
 
 ToolDefinition の `input_schema` は JSON Schema 形式。derive マクロや schemars 連携は将来の拡張として、まずは手書き or serde_json::json! マクロで定義する。
 
-### 4. Agent (ReAct Loop)
+### 4. Context Builder ✅
 
-会話履歴（Memory）はライブラリでは管理せず、呼び出し側が `Vec<Message>` として渡す設計とする。必要に応じてユーザーがスライディングウィンドウや要約を自前で実装できる。
+LLM に渡すコンテキスト（メッセージ列）の構築を制御する抽象。system prompt の挿入、会話履歴の圧縮、外部メモリの注入などをユーザーがカスタマイズできる。
+
+```rust
+pub trait ContextBuilder: Send + Sync {
+    /// ReActループ開始前。ユーザーのメッセージ列 → 初期コンテキスト。
+    fn build_initial(&self, messages: Vec<Message>) -> Vec<Message>;
+
+    /// 2回目以降のイテレーション前。会話履歴 → LLMに送るメッセージ列。
+    /// デフォルト: そのまま返す。
+    fn build_iteration(&self, conversation: &[Message], iteration: usize) -> Vec<Message>;
+}
+
+pub struct DefaultContextBuilder { system_prompt: Option<String> }
+```
+
+**設計意図**: 同期 trait にしている。非同期検索（ベクトル DB 等）は `agent.run()` 前に行い、ContextBuilder の state に入れる設計。必要になったら `AsyncContextBuilder` を別 trait として追加可能。
+
+### 5. Agent (ReAct Loop)
+
+会話履歴（Memory）はライブラリでは管理せず、呼び出し側が `Vec<Message>` として渡す設計とする。ContextBuilder を通じて、ユーザーがスライディングウィンドウや要約を実装できる。
 
 ```rust
 pub struct AgentConfig {
     pub max_iterations: usize,
-    pub system_prompt: Option<String>,
 }
 
 pub struct Agent<P: LlmProvider> {
     provider: P,
     tools: Vec<Box<dyn Tool>>,
     config: AgentConfig,
+    context_builder: Box<dyn ContextBuilder>,
 }
 
 impl<P: LlmProvider> Agent<P> {
     /// メッセージ列を受け取り、ReAct ループを実行する（テキスト応答）
     pub async fn run(&self, messages: Vec<Message>) -> Result<AgentOutput, Error> {
-        // 1. System prompt + messages でリクエスト構築
+        // 1. context_builder.build_initial(messages) でコンテキスト構築
         // 2. Loop:
         //    a. LLM に chat リクエスト送信
         //    b. StopReason が ToolUse なら Tool を実行し、結果を追加して continue
@@ -258,10 +277,15 @@ pub enum Error {
 - 内部型 (`types.rs`) + 変換層 (`convert.rs`) で membrane-core ↔ OpenAI wire format を分離
 - wiremock ベースのテスト（実 API キー不要）
 
-### Phase 4: 拡張
+### Phase 4: Context Builder ✅
+- `ContextBuilder` trait（コンテキスト構築の抽象化）
+- `DefaultContextBuilder`（system prompt の単純挿入）
+- `AgentConfig` から `system_prompt` を分離し、`ContextBuilder` に移動
+- Agent に `with_system_prompt()` / `without_system_prompt()` 便利メソッド
+
+### Phase 5: 拡張
 - membrane-anthropic クレート（Messages API）
 - Streaming 対応
-- Memory 抽象化（必要になった場合）
 - Multi-agent 対応
 
 ---

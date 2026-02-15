@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let provider = OpenAiProvider::builder().api_key(api_key).build();
 
-    let agent = Agent::new(
+    let agent = Agent::with_system_prompt(
         provider,
         vec![
             Box::new(ReadFileTool),
@@ -39,10 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AgentConfig {
             model: "gpt-4o".to_string(),
             max_iterations: 20,
-            system_prompt: Some(SYSTEM_PROMPT.to_string()),
             max_tokens: Some(4096),
             temperature: Some(0.0),
         },
+        SYSTEM_PROMPT,
     );
 
     let output = agent
