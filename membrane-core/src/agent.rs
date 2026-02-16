@@ -140,6 +140,17 @@ impl<P: LlmProvider> Agent<P> {
         self
     }
 
+    /// Register a tool as a parallel (fan-out) tool.
+    ///
+    /// The tool is wrapped in [`crate::tool::ParallelTool`], which changes its
+    /// input schema to accept `{ "inputs": [<original_input>, ...] }`. Each
+    /// input is executed concurrently and results are combined.
+    pub fn with_parallel_tool(mut self, tool: Box<dyn Tool>) -> Self {
+        self.tools
+            .push(Box::new(crate::tool::ParallelTool::new(tool)));
+        self
+    }
+
     /// Create a new agent with a simple system prompt.
     pub fn with_system_prompt(
         provider: P,
@@ -1094,6 +1105,82 @@ mod tests {
         // Verify token usage: parent (20+50 input, 15+10 output) + 3 sub-agents (10*3 input, 5*3 output)
         assert_eq!(output.total_usage.input_tokens, 20 + 50 + 30);
         assert_eq!(output.total_usage.output_tokens, 15 + 10 + 15);
+    }
+
+    #[tokio::test]
+    async fn agent_parallel_tool_execution() {
+        let provider = MockProvider {
+            responses: vec![
+                // LLM calls the parallel tool with 3 inputs
+                ChatResponse {
+                    content: vec![Content::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "echo".to_string(),
+                        input: serde_json::json!({
+                            "inputs": [
+                                {"text": "alpha"},
+                                {"text": "beta"},
+                                {"text": "gamma"}
+                            ]
+                        }),
+                    }],
+                    usage: Usage {
+                        input_tokens: 20,
+                        output_tokens: 15,
+                    },
+                    stop_reason: StopReason::ToolUse,
+                },
+                // LLM gives final answer
+                ChatResponse {
+                    content: vec![Content::Text {
+                        text: "Got all three results.".to_string(),
+                    }],
+                    usage: Usage {
+                        input_tokens: 30,
+                        output_tokens: 10,
+                    },
+                    stop_reason: StopReason::EndTurn,
+                },
+            ],
+            call_count: AtomicUsize::new(0),
+        };
+
+        let agent = Agent::without_system_prompt(
+            provider,
+            vec![],
+            AgentConfig {
+                model: "test".to_string(),
+                max_iterations: 10,
+                extra_params: serde_json::Map::new(),
+            },
+        )
+        .with_parallel_tool(Box::new(EchoTool));
+
+        let output = agent
+            .run(vec![Message::user("Echo three things")])
+            .await
+            .expect("test");
+
+        assert_eq!(output.response, "Got all three results.");
+        // 2 LLM calls + 1 tool execution = 3 steps
+        assert_eq!(output.steps.len(), 3);
+
+        // Verify the tool execution step has combined output
+        match &output.steps[1] {
+            AgentStep::ToolExecution {
+                name,
+                output,
+                is_error,
+                ..
+            } => {
+                assert_eq!(name, "echo");
+                assert!(!is_error);
+                assert!(output.contains("[1] alpha"));
+                assert!(output.contains("[2] beta"));
+                assert!(output.contains("[3] gamma"));
+            }
+            _ => panic!("Expected ToolExecution step"),
+        }
     }
 
     // Test the proc macro

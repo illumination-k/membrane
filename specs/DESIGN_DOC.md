@@ -177,6 +177,30 @@ async fn get_weather(input: WeatherInput) -> Result<String, Error> {
 - `Tool` trait の `definition()` 実装（name, description, schemars による JSON Schema）
 - `Tool` trait の `execute()` 実装（JSON → 入力型のデシリアライズ → 元の async 関数の呼び出し）
 
+#### ParallelTool (Fan-out Wrapper)
+
+任意の `Box<dyn Tool>` をラップし、並列実行版に変換するラッパー。LLM が `{ "inputs": [<original_input>, ...] }` 形式で複数の入力を送ると、各入力を `futures_util::future::join_all` で並列実行し、結果を `[N]` プレフィックス付きで結合して返す。
+
+```rust
+pub struct ParallelTool {
+    inner: Box<dyn Tool>,
+}
+
+impl ParallelTool {
+    pub fn new(tool: Box<dyn Tool>) -> Self;
+}
+```
+
+`ParallelTool` 自体が `Tool` trait を実装するため、ReAct ループの変更は不要。Agent の builder で登録できる:
+
+```rust
+let agent = Agent::with_system_prompt(provider, vec![], config, "...")
+    .with_parallel_tool(Box::new(SearchFilesTool));
+// LLM は {"inputs": [{"pattern": "*.rs"}, {"pattern": "*.toml"}]} で並列検索できる
+```
+
+一部の入力が失敗しても他の結果は返る（`[N] ERROR: ...` として含まれる）。
+
 ### 4. Context Builder
 
 LLM に渡すコンテキスト（メッセージ列）の構築を制御する抽象。system prompt の挿入、会話履歴の圧縮、外部メモリの注入などをユーザーがカスタマイズできる。
@@ -431,6 +455,10 @@ impl<P: LlmProvider> Agent<P> {
 
     // Sub-Agent 追加 (builder pattern)
     pub fn with_sub_agent(self, name, description, agent) -> Self;
+    pub fn with_parallel_sub_agent(self, name, description, agent) -> Self;
+
+    // Parallel tool 追加 (fan-out wrapper)
+    pub fn with_parallel_tool(self, tool: Box<dyn Tool>) -> Self;
 
     // 実行
     pub async fn run(&self, messages: Vec<Message>) -> Result<AgentOutput, Error>;
