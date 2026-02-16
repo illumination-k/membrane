@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+futures-util = { workspace = true }
 membrane-macros = { path = "../membrane-macros" }
 schemars = { workspace = true }
 serde = { workspace = true }

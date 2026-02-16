@@ -2,6 +2,8 @@
 
 Rust library for building LLM agents. See `specs/DESIGN_DOC.md` for full design.
 
+Update `CLAUDE.md` and `DESIGN_DOC.md` when session is complete.
+
 ## Language Rules
 
 - Comment language: English

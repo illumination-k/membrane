@@ -139,6 +139,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     output.steps.len(),
                 );
             }
+            membrane_core::agent::AgentStep::ParallelSubAgentExecution {
+                name,
+                tasks,
+                outputs,
+                errors,
+            } => {
+                println!(
+                    "Step {}: Parallel sub-agent '{}' ({} tasks, {} ok, {} err)",
+                    i + 1,
+                    name,
+                    tasks.len(),
+                    outputs.len(),
+                    errors.len(),
+                );
+            }
         }
     }
     println!();

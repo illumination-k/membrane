@@ -252,6 +252,16 @@ Tool と Sub-Agent は明確に異なる概念として分離する。Tool は�
 pub trait AgentExecutor: Send + Sync {
     fn run(&self, messages: Vec<Message>)
         -> Pin<Box<dyn Future<Output = Result<AgentOutput, Error>> + Send + '_>>;
+
+    /// Run multiple queries in parallel (fan-out). Default implementation
+    /// uses futures_util::future::join_all over self.run().
+    fn run_parallel(&self, message_sets: Vec<Vec<Message>>)
+        -> Pin<Box<dyn Future<Output = Vec<Result<AgentOutput, Error>>> + Send + '_>> {
+        Box::pin(async move {
+            let futs: Vec<_> = message_sets.into_iter().map(|msgs| self.run(msgs)).collect();
+            futures_util::future::join_all(futs).await
+        })
+    }
 }
 
 impl<P: LlmProvider> AgentExecutor for Agent<P> {
@@ -264,17 +274,35 @@ impl<P: LlmProvider> AgentExecutor for Agent<P> {
 
 **設計意図**: `Agent<P>` はジェネリクスのため `Box<dyn Agent>` にできない。`AgentExecutor` で実行能力だけを trait object 化することで、異なるプロバイダーの Agent（OpenAI, Anthropic 等）を `Arc<dyn AgentExecutor>` として混在させられる。テスト用モックや実行ログのラッパーにも使い回せる。
 
-#### SubAgentEntry
+`run_parallel` はデフォルト実装付きで、同一 Agent に複数クエリを並列に投げる fan-out パターンをサポートする。`&self` は `Send + Sync` なので複数の共有借用は安全。`Agent<P>` には二重 boxing を避けるため inherent method としても `run_parallel` を提供する。
 
-Sub-Agent は LLM には `ToolDefinition` として見せるが、ライブラリ内部では Tool とは別に管理する。
+#### SubAgentEntry と SubAgentMode
+
+Sub-Agent は LLM には `ToolDefinition` として見せるが、ライブラリ内部では Tool とは別に管理する。2つのモードを持つ:
+
+- **Single**: 1つのクエリを受け取り実行。スキーマ: `{ "query": string }`
+- **Parallel**: 複数タスクを受け取り `join_all` で並列実行。スキーマ: `{ "tasks": [string] }`
 
 ```rust
+pub enum SubAgentMode {
+    Single,
+    Parallel,
+}
+
 pub struct SubAgentEntry {
     name: String,
     description: String,
-    input_schema: serde_json::Value,  // LLM に渡す入力スキーマ
+    input_schema: serde_json::Value,
     agent: Arc<dyn AgentExecutor>,
+    mode: SubAgentMode,
 }
+```
+
+コンストラクタ:
+
+```rust
+SubAgentEntry::single(name, description, agent)   // query: string
+SubAgentEntry::parallel(name, description, agent)  // tasks: [string]
 ```
 
 #### Agent 構造体の拡張
@@ -283,7 +311,7 @@ pub struct SubAgentEntry {
 pub struct Agent<P: LlmProvider> {
     provider: P,
     tools: Vec<Box<dyn Tool>>,
-    sub_agents: Vec<SubAgentEntry>,      // 追加
+    sub_agents: Vec<SubAgentEntry>,
     config: AgentConfig,
     context_builder: Box<dyn ContextBuilder>,
     stop_conditions: Vec<Box<dyn StopCondition>>,
@@ -294,35 +322,25 @@ Builder メソッド:
 
 ```rust
 impl<P: LlmProvider> Agent<P> {
-    pub fn with_sub_agent(
-        mut self,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        agent: impl AgentExecutor + 'static,
-    ) -> Self;
+    pub fn with_sub_agent(self, name, description, agent) -> Self;
+    pub fn with_parallel_sub_agent(self, name, description, agent) -> Self;
 }
 ```
 
 #### AgentStep の拡張
 
-Sub-Agent の実行結果は `AgentOutput` 全体を保持し、ステップ・トークン使用量・停止理由を参照可能にする。
+Sub-Agent の実行結果を保持する2つの variant:
 
 ```rust
 pub enum AgentStep {
-    LlmCall {
-        request_messages: usize,
-        response: ChatResponse,
-    },
-    ToolExecution {
+    LlmCall { request_messages: usize, response: ChatResponse },
+    ToolExecution { name: String, input: Value, output: String, is_error: bool },
+    SubAgentExecution { name: String, input: Value, output: AgentOutput },
+    ParallelSubAgentExecution {
         name: String,
-        input: serde_json::Value,
-        output: String,
-        is_error: bool,
-    },
-    SubAgentExecution {                  // 追加
-        name: String,
-        input: serde_json::Value,
-        output: AgentOutput,             // response, steps, usage, stop_reason 全部入り
+        tasks: Vec<String>,
+        outputs: Vec<AgentOutput>,  // 成功した実行結果
+        errors: Vec<String>,        // 失敗したタスクのエラーメッセージ
     },
 }
 ```
@@ -332,57 +350,51 @@ pub enum AgentStep {
 LLM が `tool_use` を返したとき、name を tools → sub_agents の順で検索し、該当する方に dispatch する:
 
 1. **Tool にマッチ** → `Tool::execute()` → `String` → `Content::ToolResult` を会話に追加
-2. **Sub-Agent にマッチ** → `AgentExecutor::run()` → `AgentOutput` を取得
-   - `output.response` を `Content::ToolResult` として会話に追加（LLM への返答用）
+2. **Single Sub-Agent にマッチ** → `AgentExecutor::run()` → `AgentOutput` を取得
+   - `output.response` を `Content::ToolResult` として会話に追加
    - `AgentOutput` 全体を `AgentStep::SubAgentExecution` に記録
    - `output.total_usage` を親の `total_usage` に加算
+3. **Parallel Sub-Agent にマッチ** → `input.tasks` 配列を取得
+   - 各タスクを `Message::user(task)` にして `AgentExecutor::run_parallel()` で並列実行
+   - 結果を `[Task 1] ...\n[Task 2] ...` 形式にまとめて `Content::ToolResult` として返す
+   - 各成功した `AgentOutput` の `total_usage` を親に加算
+   - `AgentStep::ParallelSubAgentExecution` に全結果を記録
 
 #### Observability
 
-tracing span で Tool 実行と Sub-Agent 実行を明確に分離する:
+tracing span で Tool 実行・Single Sub-Agent・Parallel Sub-Agent を分離する:
 
 ```
 agent.run              [parent]
 ├── iteration.0
 │   ├── llm.chat
-│   ├── tool.exec      [name=read_file]       ← Tool
-│   └── sub_agent.run  [name=researcher]       ← Sub-Agent（ネストした span）
-│       ├── iteration.0
-│       │   ├── llm.chat
-│       │   └── tool.exec [name=web_search]
-│       └── iteration.1
-│           └── llm.chat
+│   ├── tool.exec              [name=read_file]
+│   ├── sub_agent.run          [name=assistant]     ← Single
+│   └── sub_agent.run_parallel [name=researcher, task_count=3] ← Parallel
+│       ├── agent.run [task 0]
+│       ├── agent.run [task 1]
+│       └── agent.run [task 2]
 ```
 
 #### Application 層での利用イメージ
 
-Planner / Worker パターンなどの高レベルなオーケストレーションは application 層の責務。ライブラリは Sub-Agent invoke のプリミティブのみ提供する。
-
 ```rust
-// Sub-Agent を構築
-let researcher = Agent::with_system_prompt(
-    provider.clone(), research_tools, config.clone(),
-    "You are a research specialist.",
-);
-let coder = Agent::with_system_prompt(
-    provider.clone(), coding_tools, config.clone(),
-    "You are a coding specialist.",
-);
+// Single Sub-Agent
+let coder = Agent::with_system_prompt(provider, coding_tools, config, "You are a coder.");
 
-// 親 Agent に Sub-Agent として登録（Tool とは別のメソッド）
-let planner = Agent::with_system_prompt(
-    provider, planner_tools, config,
-    "You are a planner. Delegate tasks to sub-agents.",
-)
-.with_sub_agent("research", "Research a topic in depth", researcher)
-.with_sub_agent("code", "Write code to solve a task", coder);
+// Parallel Sub-Agent (fan-out)
+let researcher = Agent::with_system_prompt(provider, research_tools, config, "You are a researcher.");
 
-let output = planner.run(vec![Message::user("Build a web scraper")]).await?;
+let planner = Agent::with_system_prompt(provider, vec![], config, "You are a planner.")
+    .with_sub_agent("code", "Write code", coder)
+    .with_parallel_sub_agent("research", "Research topics concurrently", researcher);
 
-// Sub-Agent の実行詳細は AgentStep から参照可能
+let output = planner.run(vec![Message::user("Research A, B, C then code")]).await?;
+
+// Parallel Sub-Agent の結果は ParallelSubAgentExecution から参照
 for step in &output.steps {
-    if let AgentStep::SubAgentExecution { name, output, .. } = step {
-        println!("Sub-agent '{}' used {} tokens", name, output.total_usage.input_tokens);
+    if let AgentStep::ParallelSubAgentExecution { name, tasks, outputs, .. } = step {
+        println!("{}: {} tasks, {} succeeded", name, tasks.len(), outputs.len());
     }
 }
 ```
