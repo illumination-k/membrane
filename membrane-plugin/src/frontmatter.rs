@@ -70,6 +70,15 @@ impl Frontmatter {
             .and_then(|v| v.as_bool())
     }
 
+    /// Get an unsigned integer field value.
+    ///
+    /// Returns `None` if the field is not present or not a valid u64.
+    pub fn get_u64(&self, key: &str) -> Option<u64> {
+        self.mapping
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_u64())
+    }
+
     /// Get a list field.
     ///
     /// Handles multiple YAML representations:
@@ -219,6 +228,15 @@ Review the following code...";
 
         assert_eq!(fm.get("name"), Some("test"));
         assert_eq!(fm.get("description"), Some("desc"));
+    }
+
+    #[test]
+    fn parse_u64_fields() {
+        let content = "---\nmaxTurns: 25\n---\nBody";
+        let (fm, _body) = Frontmatter::parse(content);
+
+        assert_eq!(fm.get_u64("maxTurns"), Some(25));
+        assert_eq!(fm.get_u64("nonexistent"), None);
     }
 
     #[test]
