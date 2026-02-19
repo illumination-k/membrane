@@ -664,9 +664,9 @@ pub struct ErrorInfo {
 
 ### メモリの分類体系
 
-人間の認知科学に基づき、LLM エージェントのメモリは以下のように分類される（Zhang et al., 2024; LangMem, 2025）。
+人間の認知科学に基づき、LLM エージェントのメモリは以下のように分類される（Zhang et al., 2024; Hu et al., 2025）。
 
-#### Short-term Memory（短期記憶）
+#### Short-term Memory（短期記憶）/ Working Memory（作業記憶）
 
 LLM のコンテキストウィンドウそのものに対応する。現在の会話ターンや直近の tool 実行結果など、即座にアクセス可能な情報。membrane の現在の `Vec<Message>` はこれに相当する。
 
@@ -677,9 +677,17 @@ LLM のコンテキストウィンドウそのものに対応する。現在の�
 
 コンテキストウィンドウ外に永続化される情報。以下の3種類に細分される:
 
-1. **Semantic Memory（意味記憶）**: 世界知識、ユーザープロファイル、ドメイン固有の事実。ベクトル DB や構造化ストレージに格納。「何を知っているか」。
-2. **Episodic Memory（エピソード記憶）**: 過去の具体的な対話や経験の記録。成功した対話パターンや特定のタスク遂行の文脈を保持。「何が起きたか」。Few-shot example として利用されることが多い。
+1. **Semantic Memory（意味記憶）/ Factual Memory**: 世界知識、ユーザープロファイル、ドメイン固有の事実。ベクトル DB や構造化ストレージに格納。「何を知っているか」。
+2. **Episodic Memory（エピソード記憶）/ Experiential Memory**: 過去の具体的な対話や経験の記録。成功した対話パターンや特定のタスク遂行の文脈を保持。「何が起きたか」。Few-shot example として利用されることが多い。
 3. **Procedural Memory（手続き記憶）**: タスクの実行方法に関する知識。エージェントのシステムプロンプトやルール、学習された手順。「どう振る舞うか」。
+
+#### 実装形態による分類（Hu et al., 2025）
+
+最新のサーベイ "Memory in the Age of AI Agents" では、機能分類に加えて実装形態による分類も提案されている:
+
+1. **Token-level memory**: テキストとしてコンテキストウィンドウに直接注入されるメモリ。membrane の `Vec<Message>` や system prompt がこれに該当
+2. **Parametric memory**: モデルの重みに埋め込まれたメモリ。ファインチューニングやアダプタで獲得。membrane のスコープ外（LLM プロバイダー側の責務）
+3. **Latent memory**: 埋め込みベクトルや潜在表現として保持されるメモリ。ベクトル DB への格納や soft prompt がこれに該当。membrane-memory の `MemoryStore` で対応可能
 
 ### 主要論文・アプローチ
 
@@ -750,6 +758,118 @@ LLM のコンテキストウィンドウそのものに対応する。現在の�
   - 前回の要約 + 新しいコンテキストから再帰的に新しい要約を生成
   - 要約の連鎖により、任意の長さの対話履歴を圧縮
 - **membrane への示唆**: `ContextBuilder::build_iteration()` で実装可能な最もシンプルなアプローチ。要約の生成に LLM 呼び出しが必要なため、非同期 ContextBuilder が有用
+
+### 2025-2026年の最新論文・アプローチ
+
+メモリ管理は 2025-2026 年にかけて急速に発展しており、以下の主要なトレンドが見られる: (1) Memory OS パラダイム — メモリをファーストクラスのシステムリソースとして扱う、(2) RL によるメモリポリシー学習、(3) 認知科学に基づく忘却メカニズム、(4) プロダクション指向のスケーラブル設計。
+
+#### 7. Memory in the Age of AI Agents (Hu, Liu et al., 2025)
+
+- **論文**: [arXiv:2512.13564](https://arxiv.org/abs/2512.13564), Dec 2025
+- **核心**: エージェントメモリ研究の包括的サーベイ。47名の共著者による大規模な統合的整理
+- **貢献**:
+  - 従来の long/short-term 分類を超える、より精緻な分類体系を提案
+  - **3つの実装形態**: Token-level memory、Parametric memory、Latent memory
+  - **3つの機能分類**: Factual memory（事実記憶）、Experiential memory（経験記憶）、Working memory（作業記憶）
+  - メモリの形成・進化・検索の時間的ダイナミクスを分析
+  - ベンチマーク・OSS フレームワーク・新興フロンティア（自動化、RL 統合、マルチモーダル、マルチエージェント）を網羅
+- **membrane への示唆**: membrane の `MemoryStore` trait 設計において、factual / experiential / working の区分をメタデータで表現可能にすることが有用。`MemoryEntry.metadata` にメモリ種別フィールドを設けるアプローチが自然
+
+#### 8. Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory (Chhikara et al., 2025)
+
+- **論文**: [arXiv:2504.19413](https://arxiv.org/abs/2504.19413), Apr 2025
+- **核心**: プロダクション指向のスケーラブルなメモリアーキテクチャ
+- **設計**:
+  - 会話から salient な情報を動的に抽出・統合・検索する2層アーキテクチャ
+  - **Base Mem0**: 動的メモリ抽出と統合
+  - **Graph-enhanced variant**: グラフベースのメモリ表現で複雑な関係構造を捕捉
+- **成果**: OpenAI 比で LLM-as-a-Judge メトリクス 26% 向上、p95 レイテンシ 91% 削減、トークンコスト 90% 以上削減。LOCOMO ベンチマークの single-hop / temporal / multi-hop / open-domain 全カテゴリで6つのベースラインを上回る
+- **membrane への示唆**: `MemoryStore` のグラフ拡張バリアント設計の参考。メモリの統合（consolidation）操作を trait に含めるかの検討材料。プロダクションでのレイテンシ・コスト最適化の知見
+
+#### 9. MemoryOS: Memory OS of AI Agent (Kang et al., 2025)
+
+- **論文**: [arXiv:2506.06326](https://arxiv.org/abs/2506.06326), EMNLP 2025 Oral
+- **核心**: OS のメモリ管理原則に着想を得た、パーソナライズド AI エージェント向けメモリ OS
+- **設計**:
+  - **3層ストレージ**: Short-term Memory → Mid-term Memory → Long-term Personal Memory の階層構造
+  - **Memory Storage / Updating / Retrieval / Generation** の4モジュール
+  - STM→MTM は対話チェーンベースの FIFO、MTM→LTM はセグメント化ページ構成戦略で動的更新
+- **成果**: LoCoMo ベンチマークで GPT-4o-mini 上のベースライン比 F1 49.11% 向上、BLEU-1 46.18% 向上
+- **membrane への示唆**: `MemoryStore` を3層に分割する階層設計パターン。membrane-memory でラップ可能な `TieredMemoryStore` の検討
+
+#### 10. MemOS: A Memory OS for AI System (MemTensor, 2025)
+
+- **論文**: [arXiv:2507.03724](https://arxiv.org/abs/2507.03724), Jul 2025
+- **核心**: メモリをファーストクラスの運用リソースとして扱う Memory OS
+- **設計**:
+  - **3つのメモリ型**: Parametric memory（モデル重み）、Activation memory（KV キャッシュ等）、Plaintext memory（テキスト）に対する統一的な表現・組織・ガバナンス機構
+  - HuggingFace / OpenAI / Ollama 等の主要 LLM エコシステムと互換
+- **成果**: LoCoMo ベンチマークで OpenAI のグローバルメモリ比 temporal reasoning 159% 向上、全体精度 38.97% 向上、トークンオーバーヘッド 60.95% 削減
+- **membrane への示唆**: membrane は plaintext memory のみに注力する方針で良い（parametric / activation は LLM プロバイダー側の責務）。ただし、将来の KV キャッシュ制御は `LlmProvider` trait 拡張として検討の余地あり
+
+#### 11. EverMemOS: Self-Organizing Memory OS for Structured Long-Horizon Reasoning (Hu et al., 2026)
+
+- **論文**: [arXiv:2601.02163](https://arxiv.org/abs/2601.02163), Jan 2026
+- **核心**: 生物学の engram（記憶痕跡）理論に着想を得た、自己組織化メモリ OS
+- **設計**:
+  - **Episodic Trace Formation**: 対話ストリームを MemCell に変換。エピソード痕跡・原子的事実・時間制限付き Foresight シグナルを捕捉
+  - **Semantic Consolidation**: MemCell をテーマ別 MemScene に組織化。安定的な意味構造を蒸留しユーザープロファイルを更新
+  - **Reconstructive Recollection**: MemScene ガイドのエージェント的検索で、必要十分なコンテキストを構成
+- **成果**: LoCoMo および LongMemEval で SOTA 達成
+- **membrane への示唆**: メモリのライフサイクル管理（形成→統合→想起）の概念を `MemoryStore` trait に反映できる。`consolidate()` メソッドの追加検討
+
+#### 12. Agentic Memory (AgeMem): Unified LTM and STM Management (Yu et al., 2026)
+
+- **論文**: [arXiv:2601.01885](https://arxiv.org/abs/2601.01885), Jan 2026
+- **核心**: LTM と STM を統合的に管理するフレームワーク。メモリ操作を tool-based action として LLM エージェントに公開
+- **設計**:
+  - エージェントが store / retrieve / update / summarize / discard を自律的に判断
+  - 3段階の progressive reinforcement learning + step-wise GRPO でメモリ操作の報酬スパース性に対処
+- **成果**: 5つの long-horizon ベンチマークで既存メモリ拡張手法を 4.82-8.57 ポイント上回る
+- **membrane への示唆**: membrane の Memory Tool パターン（MemoryStoreTool / MemorySearchTool / MemoryDeleteTool）の妥当性を裏付ける。RL によるメモリポリシー最適化はアプリケーション層の課題
+
+#### 13. MemRL: Self-Evolving Agents via Runtime RL on Episodic Memory (Zhang et al., 2026)
+
+- **論文**: [arXiv:2601.03192](https://arxiv.org/abs/2601.03192), Jan 2026
+- **核心**: Frozen LLM + 外部 episodic memory の相互作用を MDP として定式化し、価値ベース RL でメモリ検索を最適化
+- **設計**:
+  - LLM の安定した推論能力（stability）とメモリの可塑性（plasticity）を明確に分離
+  - **Two-Phase Retrieval**: セマンティック関連性でフィルタ → 学習した Q 値（有用性）で選択
+  - 人間の Constructive Episodic Simulation に着想
+- **成果**: HLE、BigCodeBench、ALFWorld、Lifelong Agent Bench で SOTA。重み更新なしの継続的ランタイム学習を実証
+- **membrane への示唆**: `MemoryStore::search()` の検索ロジックに Q 値的なランキングを組み込む拡張が可能。`MemoryEntry` に utility score フィールドを追加する設計
+
+#### 14. How Memory Management Impacts LLM Agents (Xiong et al., 2025)
+
+- **論文**: [arXiv:2505.16067](https://arxiv.org/abs/2505.16067), May 2025
+- **核心**: メモリの追加・削除がエージェントの長期的行動に与える影響の実証研究
+- **知見**:
+  - **Experience-Following Property**: 検索されたメモリとタスク入力の類似度が高いほど、エージェント出力も類似する
+  - **Error Propagation**: 誤ったメモリが蓄積すると将来の性能が劣化する
+  - **Misaligned Experience Replay**: 一見正しいメモリでも、将来のタスクに対して誤誘導的になりうる
+  - Utility ベース・検索履歴ベースの削除戦略が、ナイーブ戦略比で最大 10% の性能向上
+- **membrane への示唆**: `MemoryStore` に品質管理メカニズムを設ける重要性を示唆。`MemoryEntry` に品質スコアやアクセス回数を持たせ、定期的なメモリ品質評価（pruning）をサポートする設計
+
+#### 15. Focus: Active Context Compression for LLM Agents (Verma, 2026)
+
+- **論文**: [arXiv:2601.07190](https://arxiv.org/abs/2601.07190), Jan 2026
+- **核心**: エージェントが自身の文脈履歴を自律的に圧縮する intra-trajectory compression
+- **設計**:
+  - 粘菌の探索パターンに着想を得た自律的コンテキスト管理
+  - タスク実行中にエージェントが自発的に知見を persistent knowledge section に統合し、不要なインタラクションログを除去
+- **成果**: SWE-bench Lite で精度を維持しつつトークン 22.7% 削減（個別インスタンスで最大 57% 削減）。タスクあたり平均 6.0 回の自律的圧縮
+- **membrane への示唆**: `ContextBuilder::build_iteration()` にエージェント駆動の圧縮ロジックを実装するパターン。Tool として圧縮指示を出す方式との比較が必要
+
+### 2025-2026年の研究トレンドまとめ
+
+| トレンド | 代表論文 | 核心 |
+|---------|---------|------|
+| **Memory OS パラダイム** | MemoryOS, MemOS, EverMemOS | メモリを OS レベルのリソースとして管理。階層構造・ライフサイクル・ガバナンス |
+| **RL によるメモリポリシー** | AgeMem, MemRL | メモリ操作の意思決定を強化学習で最適化。Frozen LLM + 可塑的メモリ |
+| **プロダクション指向** | Mem0 | レイテンシ・コスト・スケーラビリティを重視した実用設計 |
+| **メモリ品質管理** | Xiong et al. | メモリの追加・削除戦略がエージェント性能に直結。Error propagation の回避 |
+| **自律的コンテキスト圧縮** | Focus | エージェント自身が実行中にコンテキストを圧縮 |
+| **包括的分類体系** | Memory in the Age of AI Agents | Factual / Experiential / Working の3分類。Token / Parametric / Latent の3形態 |
 
 ### コンテキストウィンドウ管理の実践的手法
 
@@ -1036,6 +1156,15 @@ fn build_episodic_memory(output: &AgentOutput, store: &dyn MemoryStore) {
 7. Zhang, Z. et al. "A Survey on the Memory Mechanism of Large Language Model based Agents." ACM TOIS. arXiv:2404.13501, 2024.
 8. JetBrains Research. "Cutting Through the Noise: Smarter Context Management for LLM-Powered Agents." 2025.
 9. LangChain. "LangMem: Long-term Memory in LLM Applications." 2025.
+10. Hu, Y., Liu, S. et al. "Memory in the Age of AI Agents." arXiv:2512.13564, 2025.
+11. Chhikara, P. et al. "Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory." arXiv:2504.19413, 2025.
+12. Kang, J. et al. "Memory OS of AI Agent." EMNLP 2025 Oral. arXiv:2506.06326, 2025.
+13. MemTensor. "MemOS: A Memory OS for AI System." arXiv:2507.03724, 2025.
+14. Hu, C. et al. "EverMemOS: A Self-Organizing Memory Operating System for Structured Long-Horizon Reasoning." arXiv:2601.02163, 2026.
+15. Yu, Y. et al. "Agentic Memory: Learning Unified Long-Term and Short-Term Memory Management for Large Language Model Agents." arXiv:2601.01885, 2026.
+16. Zhang, S. et al. "MemRL: Self-Evolving Agents via Runtime Reinforcement Learning on Episodic Memory." arXiv:2601.03192, 2026.
+17. Xiong, Z. et al. "How Memory Management Impacts LLM Agents: An Empirical Study of Experience-Following Behavior." arXiv:2505.16067, 2025.
+18. Verma, N. "Active Context Compression: Autonomous Memory Management in LLM Agents." arXiv:2601.07190, 2026.
 
 ---
 
