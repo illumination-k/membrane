@@ -839,6 +839,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "membrane-plugin"
+version = "0.1.0"
+dependencies = [
+ "membrane-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "membrane-tools"
 version = "0.1.0"
 dependencies = [
