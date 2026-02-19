@@ -656,6 +656,389 @@ pub struct ErrorInfo {
 
 ---
 
+## Memory Management Research
+
+現在の membrane は `Agent takes Vec<Message> as input — no built-in memory management` という方針で、会話履歴の管理は呼び出し側に委ねている。`ContextBuilder` trait を通じて、ユーザーがスライディングウィンドウや要約を実装できる設計となっている。
+
+本セクションでは、将来的なメモリ管理機能の設計判断の材料として、LLM エージェントのメモリマネジメントに関する主要な論文・アプローチを調査した結果をまとめる。
+
+### メモリの分類体系
+
+人間の認知科学に基づき、LLM エージェントのメモリは以下のように分類される（Zhang et al., 2024; LangMem, 2025）。
+
+#### Short-term Memory（短期記憶）
+
+LLM のコンテキストウィンドウそのものに対応する。現在の会話ターンや直近の tool 実行結果など、即座にアクセス可能な情報。membrane の現在の `Vec<Message>` はこれに相当する。
+
+- **制約**: コンテキストウィンドウのトークン上限
+- **対策**: スライディングウィンドウ、要約、truncation
+
+#### Long-term Memory（長期記憶）
+
+コンテキストウィンドウ外に永続化される情報。以下の3種類に細分される:
+
+1. **Semantic Memory（意味記憶）**: 世界知識、ユーザープロファイル、ドメイン固有の事実。ベクトル DB や構造化ストレージに格納。「何を知っているか」。
+2. **Episodic Memory（エピソード記憶）**: 過去の具体的な対話や経験の記録。成功した対話パターンや特定のタスク遂行の文脈を保持。「何が起きたか」。Few-shot example として利用されることが多い。
+3. **Procedural Memory（手続き記憶）**: タスクの実行方法に関する知識。エージェントのシステムプロンプトやルール、学習された手順。「どう振る舞うか」。
+
+### 主要論文・アプローチ
+
+#### 1. MemGPT: Towards LLMs as Operating Systems (Packer et al., 2023)
+
+- **論文**: [arXiv:2310.08560](https://arxiv.org/abs/2310.08560)
+- **核心**: OS の仮想メモリ管理をメタファーとした階層的メモリアーキテクチャ
+- **設計**:
+  - **Main Context**（RAM 相当）: LLM のコンテキストウィンドウ内の情報
+  - **External Context**（Disk 相当）: コンテキストウィンドウ外の永続ストレージ
+  - LLM 自身が function call を通じてメモリの読み書き（ページング）を自律的に実行
+  - **Core Memory**: 常にコンテキスト内に保持される重要情報（ユーザープロファイル等）
+  - **Archival Memory**: 大容量の外部ストレージ（ベクトル検索可能）
+  - **Recall Memory**: 過去の会話履歴の検索可能なアーカイブ
+- **評価**: 長文書分析と複数セッションチャットで、コンテキスト上限を超えたテキスト処理と長期対話の一貫性を実証
+- **membrane への示唆**: Tool として memory read/write を提供し、エージェント自身にメモリ管理を委ねるアプローチ。membrane-tools に MemoryReadTool / MemoryWriteTool を追加する形で実現可能
+
+#### 2. Generative Agents: Interactive Simulacra of Human Behavior (Park et al., 2023)
+
+- **論文**: [arXiv:2304.03442](https://arxiv.org/abs/2304.03442), UIST '23
+- **核心**: Memory Stream + Retrieval + Reflection + Planning の4層アーキテクチャ
+- **設計**:
+  - **Memory Stream**: 全経験を自然言語で時系列に記録するデータベース。各メモリに作成日時・最終アクセス日時を付与
+  - **Retrieval**: recency（時間減衰）、relevance（埋め込みの類似度）、importance（LLM が判定した重要度スコア）の3軸で検索スコアを算出
+  - **Reflection**: 蓄積した観察から高次の抽象的な洞察（reflection）を生成。重要度スコアの累計が閾値を超えるとトリガー
+  - **Planning**: トップダウンで日次計画 → 時間単位 → 5-15分単位に再帰的に詳細化
+- **membrane への示唆**: ContextBuilder の `build_iteration()` で retrieval ロジックを実装できる。importance scoring は LLM 呼び出しが必要なため、`AsyncContextBuilder` trait の導入が有用
+
+#### 3. Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)
+
+- **論文**: [arXiv:2303.11366](https://arxiv.org/abs/2303.11366), NeurIPS 2023
+- **核心**: 重み更新なしに、言語的フィードバック（自己反省）でエージェントを強化
+- **設計**:
+  - **Actor**: 環境と対話してアクション・軌跡を生成
+  - **Evaluator**: 軌跡にスコアを付与
+  - **Self-Reflection**: 失敗の分析結果を自然言語で生成し、episodic memory buffer に蓄積
+  - 次回の試行で、蓄積した反省を参照して意思決定を改善
+  - memory buffer はコンテキスト上限に収まるよう、直近 1-3 件に制限
+- **成果**: HumanEval で 91% pass@1（GPT-4 単体の 80% を上回る）
+- **membrane への示唆**: `AgentOutput` の steps を分析して reflection を生成し、次回の run に渡す episodic memory パターン。アプリケーション層で実装可能
+
+#### 4. A-MEM: Agentic Memory for LLM Agents (Xu et al., 2025)
+
+- **論文**: [arXiv:2502.12110](https://arxiv.org/abs/2502.12110), NeurIPS 2025
+- **核心**: Zettelkasten メソッドに着想を得た、エージェント的メモリ組織化
+- **設計**:
+  - メモリを相互にリンクされたナレッジネットワークとして動的にインデックス化
+  - エージェント自身がメモリの整理・関連付けを実行
+- **成果**: ベースライン（MemGPT 含む）比で 85-93% のトークン使用量削減
+- **membrane への示唆**: 構造化されたメモリストア（グラフベース）と、メモリ管理自体をエージェントのタスクとして扱うアプローチ
+
+#### 5. SCM: Self-Controlled Memory Framework (Liang et al., 2023)
+
+- **論文**: [arXiv:2304.13343](https://arxiv.org/abs/2304.13343)
+- **核心**: LLM ベースの Memory Controller がメモリの更新・利用タイミングを制御
+- **設計**:
+  - **Agent**（バックボーン LLM）+ **Memory Stream** + **Memory Controller** の3コンポーネント
+  - Memory Controller がいつ・どのメモリを利用するかを判断
+  - ファインチューニング不要で任意の instruction-following LLM に plug-and-play で統合可能
+- **membrane への示唆**: ContextBuilder を拡張して Memory Controller の役割を持たせる設計が可能
+
+#### 6. Recursively Summarizing Enables Long-Term Dialogue Memory (Wang et al., 2023)
+
+- **論文**: [arXiv:2308.15022](https://arxiv.org/abs/2308.15022)
+- **核心**: 再帰的要約による長期対話メモリ
+- **設計**:
+  - 小さな対話コンテキストからまず要約を生成
+  - 前回の要約 + 新しいコンテキストから再帰的に新しい要約を生成
+  - 要約の連鎖により、任意の長さの対話履歴を圧縮
+- **membrane への示唆**: `ContextBuilder::build_iteration()` で実装可能な最もシンプルなアプローチ。要約の生成に LLM 呼び出しが必要なため、非同期 ContextBuilder が有用
+
+### コンテキストウィンドウ管理の実践的手法
+
+論文以外の実践的なアプローチも整理する（JetBrains Research, 2025; LangChain, 2025）。
+
+| 手法 | 概要 | トレードオフ |
+|------|------|------------|
+| **Sliding Window** | 直近 N メッセージのみ保持 | 実装が最も単純。古い情報を完全に喪失 |
+| **Conversation Summarization** | 古い対話を LLM で要約して圧縮 | 情報保持率が高い。要約のための追加 LLM 呼び出しコスト |
+| **Hybrid Summary + Buffer** | 直近はそのまま保持、古い部分は要約 | バランスが良い。LangChain の ConversationSummaryBufferMemory が代表例 |
+| **Hierarchical Summarization** | 情報の古さに応じて段階的に圧縮度を上げる | 91% の重要情報を保持しつつ 60-70% のトークン削減（研究報告） |
+| **Observation Masking** | 古い観察結果をプレースホルダーに置換 | LLM 要約と同等の性能（JetBrains 調べ）。ハイパーパラメータ調整が必要 |
+| **Vector Store / RAG** | 過去の対話を埋め込みとして保存し、意味的に類似したものを検索注入 | FAQ 的なインタラクションに有効。セットアップコストが高い |
+| **Knowledge Graph** | エンティティ・関係を抽出しグラフ構築 | 構造化された知識に強い。抽出精度に依存 |
+
+### membrane への抽象化設計
+
+調査結果を踏まえ、membrane でメモリ管理をどこまで抽象化できるかを分析する。
+
+#### 設計原則
+
+1. **membrane-core はメモリ管理を行わない方針を維持**する。`Vec<Message>` をそのまま受け取る設計の利点（永続化手段の自由、タスク依存の戦略、core の責務の明確さ）は保つ。
+2. **抽象化は拡張レイヤーで提供**する。core に trait のみ追加し、実装は別クレートに配置。
+3. **既存の `ContextBuilder` との後方互換性**を維持する。
+
+#### レイヤー構成
+
+```
+Layer 0: membrane-core（trait のみ追加）
+├── ContextBuilder (sync, 既存・変更なし)
+└── AsyncContextBuilder (新規、Pin<Box<dyn Future>> で dyn-compatible)
+
+Layer 1: membrane-memory（新規クレート）
+├── MemoryStore trait (ストレージ抽象)
+├── MemoryEntry, MemoryQuery 型
+├── InMemoryStore (メモリ内実装)
+├── SlidingWindowContextBuilder
+├── SummaryContextBuilder (AsyncContextBuilder, LLM 呼び出し)
+└── HybridContextBuilder (Summary + Buffer)
+
+Layer 2: membrane-tools（既存クレートに追加）
+├── MemoryStoreTool (MemGPT 方式: エージェントがメモリに書き込み)
+├── MemorySearchTool (セマンティック検索 / キーワード検索)
+└── MemoryDeleteTool
+
+Layer 3: Application 層（ユーザー実装）
+├── ストレージバックエンド (Redis, SQLite, ベクトル DB 等)
+├── Episodic memory 構築ロジック (Reflexion パターン)
+└── タスク固有のメモリ戦略
+```
+
+#### 1. AsyncContextBuilder（membrane-core に追加）
+
+多くのメモリ管理手法は LLM 呼び出しやベクトル検索など非同期処理を必要とする。`Tool` trait と同様に `Pin<Box<dyn Future>>` を使い、dyn-compatible にする。
+
+```rust
+/// Async version of ContextBuilder for memory-intensive context building.
+///
+/// Uses Pin<Box<dyn Future>> (like Tool trait) for dyn-compatibility.
+/// Enables retrieval-based memory, LLM summarization, importance scoring, etc.
+pub trait AsyncContextBuilder: Send + Sync {
+    fn build_initial(&self, messages: Vec<Message>)
+        -> Pin<Box<dyn Future<Output = Vec<Message>> + Send + '_>>;
+
+    fn build_iteration(&self, conversation: &[Message], iteration: usize)
+        -> Pin<Box<dyn Future<Output = Vec<Message>> + Send + '_>>;
+}
+```
+
+**Agent 側の統合**: Agent は内部で `Box<dyn AsyncContextBuilder>` を保持する。既存の同期 `ContextBuilder` はアダプタ構造体でラップすることで後方互換性を維持する。
+
+```rust
+/// Adapter: wraps a sync ContextBuilder as an AsyncContextBuilder.
+struct SyncAdapter(Box<dyn ContextBuilder>);
+
+impl AsyncContextBuilder for SyncAdapter {
+    fn build_initial(&self, messages: Vec<Message>)
+        -> Pin<Box<dyn Future<Output = Vec<Message>> + Send + '_>> {
+        Box::pin(std::future::ready(self.0.build_initial(messages)))
+    }
+
+    fn build_iteration(&self, conversation: &[Message], iteration: usize)
+        -> Pin<Box<dyn Future<Output = Vec<Message>> + Send + '_>> {
+        Box::pin(std::future::ready(self.0.build_iteration(conversation, iteration)))
+    }
+}
+```
+
+`Agent::with_system_prompt()` 等の既存コンストラクタは内部で `SyncAdapter` を使うため、ユーザーコードへの影響は最小限。
+
+**blanket impl を使わない理由**: `impl<T: ContextBuilder> AsyncContextBuilder for T` は、ユーザーが `ContextBuilder` を実装した型に対して `AsyncContextBuilder` も実装したい場合に orphan rule で衝突する。明示的なアダプタ構造体の方が柔軟。
+
+#### 2. MemoryStore trait（membrane-memory に配置）
+
+ストレージバックエンドの抽象。core ではなく別クレートに配置する理由:
+- 新しい型（`MemoryEntry`, `MemoryQuery`）を導入する
+- 時刻依存（`std::time::SystemTime` or chrono）が入る
+- 基本的な Agent 動作には不要
+- core の依存を最小限に保てる
+
+```rust
+/// A single memory entry stored in the memory system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEntry {
+    pub id: String,
+    pub content: String,
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+    pub created_at: u64,      // Unix timestamp (seconds)
+    pub last_accessed_at: u64, // Unix timestamp (seconds)
+}
+
+/// Query parameters for memory retrieval.
+#[derive(Debug, Clone)]
+pub struct MemoryQuery {
+    pub query: String,
+    pub limit: usize,
+    pub metadata_filter: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Storage backend abstraction for agent memory.
+///
+/// Implementations can range from in-memory HashMap to vector databases.
+/// Uses Pin<Box<dyn Future>> for dyn-compatibility (same pattern as Tool trait).
+pub trait MemoryStore: Send + Sync {
+    fn store(&self, entry: MemoryEntry)
+        -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
+
+    fn search(&self, query: MemoryQuery)
+        -> Pin<Box<dyn Future<Output = Result<Vec<MemoryEntry>, Error>> + Send + '_>>;
+
+    fn delete(&self, id: &str)
+        -> Pin<Box<dyn Future<Output = Result<bool, Error>> + Send + '_>>;
+}
+```
+
+**InMemoryStore**: テスト・プロトタイピング用のメモリ内実装。キーワード部分一致検索をサポート。
+
+#### 3. 組み込み ContextBuilder 実装（membrane-memory に配置）
+
+よく使われるパターンを実装として提供する。
+
+**SlidingWindowContextBuilder**（同期、`ContextBuilder` を実装）:
+
+```rust
+/// Keeps the system prompt + last N non-system messages.
+pub struct SlidingWindowContextBuilder {
+    system_prompt: Option<String>,
+    max_messages: usize,
+}
+
+impl ContextBuilder for SlidingWindowContextBuilder {
+    fn build_initial(&self, messages: Vec<Message>) -> Vec<Message> { /* ... */ }
+
+    fn build_iteration(&self, conversation: &[Message], _iteration: usize) -> Vec<Message> {
+        // Keep system messages + last max_messages non-system messages
+    }
+}
+```
+
+**SummaryContextBuilder**（非同期、`AsyncContextBuilder` を実装）:
+
+```rust
+/// Summarizes old conversation turns using an LLM, keeping recent turns verbatim.
+///
+/// Requires an LlmProvider for summarization.
+/// Hybrid strategy: [system] + [summary of old turns] + [last N verbatim turns]
+pub struct SummaryContextBuilder<P: LlmProvider> {
+    provider: P,
+    system_prompt: Option<String>,
+    summary_model: String,
+    buffer_size: usize,       // Number of recent messages to keep verbatim
+    summary: RwLock<Option<String>>,  // Running summary of old conversation
+}
+```
+
+**MemoryContextBuilder**（非同期、`AsyncContextBuilder` を実装）:
+
+```rust
+/// Retrieves relevant memories from a MemoryStore and injects them as context.
+///
+/// On each iteration:
+/// 1. Extracts the latest user query from conversation
+/// 2. Searches MemoryStore for relevant memories
+/// 3. Injects matched memories as system messages
+/// 4. Applies optional sliding window to conversation
+pub struct MemoryContextBuilder {
+    store: Arc<dyn MemoryStore>,
+    system_prompt: Option<String>,
+    max_memories: usize,
+    max_conversation_messages: usize,
+}
+```
+
+#### 4. Memory Tool パターン（membrane-tools に追加）
+
+MemGPT の設計に倣い、メモリの読み書きを Tool として提供する。エージェント自身がメモリ管理を行う「自律的メモリ管理」パターン。
+
+```rust
+/// Tool for the agent to store memories. Wraps a MemoryStore.
+pub struct MemoryStoreTool {
+    store: Arc<dyn MemoryStore>,
+}
+
+/// Tool for the agent to search its memories.
+pub struct MemorySearchTool {
+    store: Arc<dyn MemoryStore>,
+}
+
+/// Tool for the agent to delete memories.
+pub struct MemoryDeleteTool {
+    store: Arc<dyn MemoryStore>,
+}
+```
+
+これにより、同じ `Arc<dyn MemoryStore>` を ContextBuilder（受動的メモリ注入）と Memory Tool（能動的メモリ管理）の両方で共有できる:
+
+```rust
+let store = Arc::new(InMemoryStore::new());
+
+let context = MemoryContextBuilder::new(store.clone(), "You are helpful.", 5, 20);
+let tools: Vec<Box<dyn Tool>> = vec![
+    Box::new(MemoryStoreTool::new(store.clone())),
+    Box::new(MemorySearchTool::new(store.clone())),
+];
+
+let agent = Agent::new(provider, tools, config, Box::new(context));
+```
+
+#### 5. Episodic Memory ユーティリティ（Application 層）
+
+Reflexion パターンに基づく episodic memory 構築は、アプリケーション層のユーティリティとして提供し core には組み込まない。理由:
+
+- Reflection 生成には LLM 呼び出しが必要で、Agent のスコープ外
+- 成功/失敗の評価基準がタスク依存
+- `AgentOutput` の `steps` は Serialize/Deserialize 可能なので、ユーザーが自由に分析・蓄積できる
+
+```rust
+// Application-layer example: building episodic memory from AgentOutput
+fn build_episodic_memory(output: &AgentOutput, store: &dyn MemoryStore) {
+    for step in &output.steps {
+        match step {
+            AgentStep::ToolExecution { name, input, output, is_error } => {
+                // Record successful/failed tool patterns
+            }
+            AgentStep::SubAgentExecution { name, output: sub_output, .. } => {
+                // Record sub-agent interaction patterns
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+#### 抽象化の判断基準まとめ
+
+| 機能 | 抽象化レベル | 配置先 | 理由 |
+|------|------------|--------|------|
+| AsyncContextBuilder trait | Core trait | membrane-core | Agent ループが直接呼び出す。dyn-compatible 必須 |
+| SyncAdapter | Core internal | membrane-core | 後方互換性のための内部アダプタ |
+| MemoryStore trait | Library trait | membrane-memory | 新型導入。core に不要な依存を持ち込まない |
+| InMemoryStore | Library impl | membrane-memory | テスト・プロトタイプ用 |
+| SlidingWindowContextBuilder | Library impl | membrane-memory | 同期で単純。core に入れても良いが、crate を分ける方が一貫性がある |
+| SummaryContextBuilder | Library impl | membrane-memory | LlmProvider 依存。非同期 |
+| MemoryContextBuilder | Library impl | membrane-memory | MemoryStore 依存。非同期 |
+| MemoryStore/Search/DeleteTool | Library tools | membrane-tools | MemGPT 方式の能動的メモリ管理 |
+| Episodic memory 構築 | App utility | examples / applications | タスク依存が強い。ライブラリ化は時期尚早 |
+
+#### 実装順序
+
+1. **AsyncContextBuilder trait** を membrane-core に追加。Agent の内部を `Box<dyn AsyncContextBuilder>` に変更
+2. **membrane-memory** クレートを作成。MemoryStore trait + InMemoryStore + SlidingWindowContextBuilder
+3. **SummaryContextBuilder** を membrane-memory に追加
+4. **Memory Tools**（Store/Search/Delete）を membrane-tools に追加
+5. **examples/** に MemGPT 方式のメモリ管理サンプルを追加
+
+### 参考文献
+
+1. Packer, C. et al. "MemGPT: Towards LLMs as Operating Systems." arXiv:2310.08560, 2023.
+2. Park, J. S. et al. "Generative Agents: Interactive Simulacra of Human Behavior." UIST '23. arXiv:2304.03442, 2023.
+3. Shinn, N. et al. "Reflexion: Language Agents with Verbal Reinforcement Learning." NeurIPS 2023. arXiv:2303.11366, 2023.
+4. Xu, W. et al. "A-MEM: Agentic Memory for LLM Agents." NeurIPS 2025. arXiv:2502.12110, 2025.
+5. Liang, X. et al. "SCM: Enhancing Large Language Model with Self-Controlled Memory Framework." arXiv:2304.13343, 2023.
+6. Wang, Q. et al. "Recursively Summarizing Enables Long-Term Dialogue Memory in Large Language Models." arXiv:2308.15022, 2023.
+7. Zhang, Z. et al. "A Survey on the Memory Mechanism of Large Language Model based Agents." ACM TOIS. arXiv:2404.13501, 2024.
+8. JetBrains Research. "Cutting Through the Noise: Smarter Context Management for LLM-Powered Agents." 2025.
+9. LangChain. "LangMem: Long-term Memory in LLM Applications." 2025.
+
+---
+
 ## Open Questions
 
 1. **Streaming**: 現在 non-streaming のみ。Streaming は `Stream` trait で返す想定だが、runtime 非依存との兼ね合いをどうするか（`futures::Stream` を使うか）

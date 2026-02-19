@@ -76,7 +76,7 @@ cargo test -p membrane-core
 - `LlmProvider` uses RPITIT (`impl Future`), `Tool` uses `Pin<Box<dyn Future + Send + '_>>` for dyn-compatibility (`Box<dyn Tool>`)
 - `Message.content` is `Vec<Content>` (multiple content blocks per message)
 - `Content` uses internally-tagged serde (`#[serde(tag = "type")]`)
-- Agent takes `Vec<Message>` as input — no built-in memory management
+- Agent takes `Vec<Message>` as input — no built-in memory management. Memory management research and abstraction design documented in `specs/DESIGN_DOC.md` (Memory Management Research section)
 - `AgentConfig.extra_params` and `ChatRequest.extra_params` (`serde_json::Map`) are `#[serde(flatten)]`-ed into API requests for provider-specific params (temperature, max_tokens, etc.)
 - `AgentStopReason` enum distinguishes NaturalStop / MaxIterations / StopCondition (max_iterations is not an error)
 - `StopCondition` trait with `or()`/`and()` combinators for composable early termination
