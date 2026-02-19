@@ -16,6 +16,7 @@ membrane/
 ├── membrane-core/       # Core traits, types, agent loop, re-exports macro
 ├── membrane-macros/     # Proc macro crate (#[membrane_tool])
 ├── membrane-openai/     # OpenAI Chat Completions API provider
+├── membrane-plugin/     # Plugin system (SkillsPlugin, skills loader)
 ├── membrane-tools/      # Built-in utility tools (file I/O, exec, search)
 ├── examples/            # Example applications
 ├── applications/        # Standalone agent applications
@@ -29,8 +30,9 @@ membrane/
   - `message.rs` — Message, Content, Role
   - `provider.rs` — LlmProvider trait, ChatRequest/ChatResponse
   - `tool.rs` — Tool trait (dyn-compatible via `Pin<Box<dyn Future>>`)
-  - `agent.rs` — Agent with ReAct loop (`run`, `run_structured`)
+  - `agent.rs` — Agent with ReAct loop (`run`, `run_structured`), `with_plugin()`
   - `context.rs` — ContextBuilder trait, DefaultContextBuilder
+  - `plugin.rs` — Plugin trait (tools + context), PluginContextBuilder
   - `stop_condition.rs` — StopCondition trait, built-in conditions (Timeout, TokenBudget, MaxConsecutiveErrors, CustomStop), Or/And combinators
   - `error.rs` — Error enum, ErrorInfo
 - **membrane-macros**: `#[membrane_tool]` attribute macro for Tool generation
@@ -38,6 +40,10 @@ membrane/
   - `types.rs` — Internal serde types matching OpenAI wire format
   - `convert.rs` — Bidirectional conversion (membrane-core ↔ OpenAI)
   - `lib.rs` — `OpenAiProvider` (builder pattern), `TokenProvider` trait
+- **membrane-plugin**: Plugin system following Agent Skills / Claude Code spec
+  - `frontmatter.rs` — YAML frontmatter parser for SKILL.md files
+  - `skill.rs` — Skill struct with full spec fields (name, description, allowed-tools, user-invocable, disable-model-invocation, argument-hint, model, context, agent), `from_skill_md()`, `invoke()` for argument substitution
+  - `skills.rs` — SkillsPlugin implementing Plugin trait, `load_skills_dir()` for `<name>/SKILL.md` directory loading
 - **membrane-tools**: Built-in tools using `#[membrane_tool]` macro
   - `read_file.rs` — ReadFileTool (offset/limit support)
   - `write_file.rs` — WriteFileTool (auto directory creation)
@@ -79,3 +85,5 @@ cargo test -p membrane-core
 - Provider crates use builder pattern for construction (e.g. `OpenAiProvider::builder().api_key("...").build()`)
 - `TokenProvider` trait enables dynamic auth (e.g. Azure AD token refresh)
 - `#[membrane_tool]` macro generates `{FnNamePascalCase}Tool` struct + `Tool` impl from async functions
+- `Plugin` trait provides `tools(&mut self)` (drain semantics) and `context(&self)` (system messages); `Agent::with_plugin()` integrates both
+- `SkillsPlugin` bundles multiple `Skill`s; follows Agent Skills open standard (`<name>/SKILL.md` with YAML frontmatter); supports `invoke()` for `$ARGUMENTS`/`$N` substitution; `disable-model-invocation` skills excluded from automatic context

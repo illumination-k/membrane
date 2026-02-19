@@ -6,6 +6,7 @@ members = [
   "membrane-core",
   "membrane-macros",
   "membrane-openai",
+  "membrane-plugin",
   "membrane-tools",
 ]
 

@@ -8,6 +8,7 @@ use tracing::Instrument;
 use crate::context::{ContextBuilder, DefaultContextBuilder};
 use crate::error::Error;
 use crate::message::{Content, Message, Role};
+use crate::plugin::{Plugin, PluginContextBuilder};
 use crate::provider::{ChatRequest, ChatResponse, LlmProvider, ResponseFormat, StopReason, Usage};
 use crate::stop_condition::{AgentStopReason, StopCondition, StopContext};
 use crate::sub_agent::{AgentExecutor, AgentFuture, SubAgentEntry, SubAgentMode};
@@ -148,6 +149,25 @@ impl<P: LlmProvider> Agent<P> {
     pub fn with_parallel_tool(mut self, tool: Box<dyn Tool>) -> Self {
         self.tools
             .push(Box::new(crate::tool::ParallelTool::new(tool)));
+        self
+    }
+
+    /// Register a plugin with this agent.
+    ///
+    /// A plugin bundles tools and context. Tools are added to the agent's
+    /// tool set. Context strings are injected as system messages after any
+    /// existing system prompt during `build_initial`.
+    ///
+    /// Multiple plugins can be registered; tools and context accumulate.
+    pub fn with_plugin(mut self, mut plugin: impl Plugin) -> Self {
+        self.tools.extend(plugin.tools());
+        let contexts = plugin.context();
+        if !contexts.is_empty() {
+            self.context_builder = Box::new(PluginContextBuilder {
+                inner: self.context_builder,
+                plugin_contexts: contexts,
+            });
+        }
         self
     }
 
