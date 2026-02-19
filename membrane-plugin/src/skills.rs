@@ -144,6 +144,97 @@ impl SkillsPlugin {
     pub fn skill_mut(&mut self, name: &str) -> Option<&mut Skill> {
         self.skills.iter_mut().find(|s| s.name == name)
     }
+
+    /// Generate default instructions describing available skills.
+    ///
+    /// Produces a system-prompt-ready string that explains how to use the
+    /// registered skills, including:
+    /// - List of available skills with descriptions
+    /// - User-invocable skills (triggered via `/<name>`)
+    /// - Argument substitution hints
+    ///
+    /// This is useful as the `instructions` for the plugin when no custom
+    /// instructions are provided:
+    ///
+    /// ```
+    /// use membrane_plugin::{Skill, SkillsPlugin};
+    ///
+    /// let mut plugin = SkillsPlugin::new("project", "Project skills")
+    ///     .with_skill(
+    ///         Skill::new("review", "Reviews code quality")
+    ///             .with_user_invocable(true)
+    ///             .with_argument_hint("[filename]")
+    ///             .with_instructions("Review the given code."),
+    ///     );
+    /// let instructions = plugin.build_default_instructions();
+    /// let plugin = plugin.with_instructions(instructions);
+    /// ```
+    pub fn build_default_instructions(&self) -> String {
+        let mut lines = Vec::new();
+
+        lines.push("# Skills".to_string());
+        lines.push(String::new());
+        lines.push(
+            "The following skills are available. Each skill provides \
+             specialized instructions for a specific task."
+                .to_string(),
+        );
+
+        // User-invocable skills
+        let invocable: Vec<&Skill> = self.skills.iter().filter(|s| s.user_invocable).collect();
+
+        if !invocable.is_empty() {
+            lines.push(String::new());
+            lines.push("## User-invocable skills".to_string());
+            lines.push(String::new());
+            lines.push(
+                "These skills can be triggered by the user with `/<skill-name>`. \
+                 When invoked, follow the skill's instructions."
+                    .to_string(),
+            );
+            lines.push(String::new());
+
+            for skill in &invocable {
+                let mut entry = format!("- **{}**", skill.name);
+                if !skill.description.is_empty() {
+                    entry.push_str(&format!(": {}", skill.description));
+                }
+                if let Some(hint) = &skill.argument_hint {
+                    entry.push_str(&format!(" (usage: `/{} {}`)", skill.name, hint));
+                }
+                lines.push(entry);
+            }
+        }
+
+        // Model-invocable skills (auto-triggered)
+        let auto: Vec<&Skill> = self
+            .skills
+            .iter()
+            .filter(|s| !s.disable_model_invocation)
+            .collect();
+
+        if !auto.is_empty() {
+            lines.push(String::new());
+            lines.push("## Auto-available skills".to_string());
+            lines.push(String::new());
+            lines.push(
+                "These skills are automatically available. Use them \
+                 when the task matches their description."
+                    .to_string(),
+            );
+            lines.push(String::new());
+
+            for skill in &auto {
+                let mut entry = format!("- **{}**", skill.name);
+                if !skill.description.is_empty() {
+                    entry.push_str(&format!(": {}", skill.description));
+                }
+                lines.push(entry);
+            }
+        }
+
+        lines.join("\n")
+    }
 }
 
 impl Plugin for SkillsPlugin {
@@ -413,5 +504,49 @@ mod tests {
         let context = plugin.context();
         assert_eq!(context.len(), 1);
         assert!(context[0].contains("Skill: s1"));
+    }
+
+    #[test]
+    fn build_default_instructions_user_invocable() {
+        let plugin = SkillsPlugin::new("test", "Test")
+            .with_skill(
+                Skill::new("review", "Reviews code quality")
+                    .with_user_invocable(true)
+                    .with_argument_hint("[filename]"),
+            )
+            .with_skill(Skill::new("deploy", "Deploys to production").with_user_invocable(true));
+
+        let instructions = plugin.build_default_instructions();
+
+        assert!(instructions.contains("# Skills"));
+        assert!(instructions.contains("## User-invocable skills"));
+        assert!(instructions.contains("**review**: Reviews code quality"));
+        assert!(instructions.contains("(usage: `/review [filename]`)"));
+        assert!(instructions.contains("**deploy**: Deploys to production"));
+        assert!(!instructions.contains("(usage: `/deploy"));
+    }
+
+    #[test]
+    fn build_default_instructions_mixed() {
+        let plugin = SkillsPlugin::new("test", "Test")
+            .with_skill(
+                Skill::new("visible", "Auto skill")
+                    .with_user_invocable(false)
+                    .with_disable_model_invocation(false),
+            )
+            .with_skill(
+                Skill::new("hidden", "Hidden skill")
+                    .with_user_invocable(false)
+                    .with_disable_model_invocation(true),
+            );
+
+        let instructions = plugin.build_default_instructions();
+
+        // No user-invocable section
+        assert!(!instructions.contains("## User-invocable skills"));
+        // Auto section includes only non-disabled skills
+        assert!(instructions.contains("## Auto-available skills"));
+        assert!(instructions.contains("**visible**: Auto skill"));
+        assert!(!instructions.contains("**hidden**"));
     }
 }
