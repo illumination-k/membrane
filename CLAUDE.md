@@ -40,9 +40,10 @@ membrane/
   - `types.rs` — Internal serde types matching OpenAI wire format
   - `convert.rs` — Bidirectional conversion (membrane-core ↔ OpenAI)
   - `lib.rs` — `OpenAiProvider` (builder pattern), `TokenProvider` trait
-- **membrane-plugin**: Plugin system for bundling tools + context
-  - `skill.rs` — Skill struct (name, instructions, tools; builder pattern)
-  - `skills.rs` — SkillsPlugin implementing Plugin trait, `load_skills_dir()` for loading `.md` files
+- **membrane-plugin**: Plugin system following Agent Skills / Claude Code spec
+  - `frontmatter.rs` — YAML frontmatter parser for SKILL.md files
+  - `skill.rs` — Skill struct with full spec fields (name, description, allowed-tools, user-invocable, disable-model-invocation, argument-hint, model, context, agent), `from_skill_md()`, `invoke()` for argument substitution
+  - `skills.rs` — SkillsPlugin implementing Plugin trait, `load_skills_dir()` for `<name>/SKILL.md` directory loading
 - **membrane-tools**: Built-in tools using `#[membrane_tool]` macro
   - `read_file.rs` — ReadFileTool (offset/limit support)
   - `write_file.rs` — WriteFileTool (auto directory creation)
@@ -85,4 +86,4 @@ cargo test -p membrane-core
 - `TokenProvider` trait enables dynamic auth (e.g. Azure AD token refresh)
 - `#[membrane_tool]` macro generates `{FnNamePascalCase}Tool` struct + `Tool` impl from async functions
 - `Plugin` trait provides `tools(&mut self)` (drain semantics) and `context(&self)` (system messages); `Agent::with_plugin()` integrates both
-- `SkillsPlugin` bundles multiple `Skill`s; supports programmatic builder and `load_skills_dir()` for `.md`-file-based skills (Claude Code convention)
+- `SkillsPlugin` bundles multiple `Skill`s; follows Agent Skills open standard (`<name>/SKILL.md` with YAML frontmatter); supports `invoke()` for `$ARGUMENTS`/`$N` substitution; `disable-model-invocation` skills excluded from automatic context

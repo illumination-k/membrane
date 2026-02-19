@@ -5,12 +5,14 @@ use membrane_core::tool::Tool;
 
 use crate::skill::Skill;
 
-/// A plugin composed of multiple skills.
+/// A plugin composed of multiple skills following the Agent Skills open standard.
 ///
-/// `SkillsPlugin` follows the Claude Code skills pattern: each skill
-/// bundles instructions (context) and tools. When registered with an
-/// agent via `with_plugin()`, all skill tools are added to the agent
-/// and all skill instructions are injected as system messages.
+/// `SkillsPlugin` bundles skills that each provide instructions (context)
+/// and tools. When registered with an agent via `with_plugin()`:
+///
+/// - **Tools** from all skills are added to the agent's tool set.
+/// - **Context** follows progressive disclosure: skill descriptions are
+///   always loaded; full instructions are available via [`Skill::invoke`].
 ///
 /// # Programmatic Construction
 ///
@@ -19,7 +21,7 @@ use crate::skill::Skill;
 ///
 /// let plugin = SkillsPlugin::new("my_skills", "Custom skills for my agent")
 ///     .with_skill(
-///         Skill::new("code_review", "Reviews code")
+///         Skill::new("code-review", "Reviews code for quality")
 ///             .with_instructions("Review code for correctness and style.")
 ///     )
 ///     .with_skill(
@@ -30,8 +32,20 @@ use crate::skill::Skill;
 ///
 /// # Loading from Directory
 ///
-/// Skills instructions can be loaded from `.md` files in a directory,
-/// following the Claude Code convention (`.claude/skills/` directory):
+/// Skills are loaded from `<skill-name>/SKILL.md` subdirectories,
+/// following the Agent Skills / Claude Code convention:
+///
+/// ```text
+/// .claude/skills/
+/// ├── code-review/
+/// │   └── SKILL.md
+/// ├── testing/
+/// │   └── SKILL.md
+/// └── deploy/
+///     ├── SKILL.md
+///     └── scripts/
+///         └── deploy.sh
+/// ```
 ///
 /// ```no_run
 /// use membrane_plugin::SkillsPlugin;
@@ -62,46 +76,33 @@ impl SkillsPlugin {
         self
     }
 
-    /// Load skill instructions from `.md` files in a directory.
+    /// Load skills from `<skill-name>/SKILL.md` subdirectories.
     ///
-    /// Each `.md` file becomes a skill whose name is the file stem
-    /// (e.g., `code_review.md` → skill name `code_review`).
-    /// The file content is used as the skill's instructions.
+    /// Each subdirectory containing a `SKILL.md` file is loaded as a skill.
+    /// The directory name is used as a fallback for the skill name when not
+    /// specified in frontmatter (per the Agent Skills spec, `name` must
+    /// match the parent directory name).
     ///
-    /// Tools cannot be loaded from files; use [`Skill::with_tool`] to
-    /// attach tools to specific skills after loading.
+    /// Tools cannot be loaded from files; use [`SkillsPlugin::skill_mut`]
+    /// to attach tools to specific skills after loading.
     pub fn load_skills_dir(mut self, dir: impl AsRef<Path>) -> Result<Self, std::io::Error> {
         let dir = dir.as_ref();
 
         let mut entries: Vec<_> = std::fs::read_dir(dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
+                let path = entry.path();
+                path.is_dir() && path.join("SKILL.md").exists()
             })
             .collect();
 
-        // Sort by filename for deterministic ordering
+        // Sort by directory name for deterministic ordering
         entries.sort_by_key(|e| e.file_name());
 
         for entry in entries {
-            let path = entry.path();
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let instructions = std::fs::read_to_string(&path)?;
-
-            self.skills.push(Skill {
-                name,
-                description: String::new(),
-                instructions,
-                tools: Vec::new(),
-            });
+            let skill_md_path = entry.path().join("SKILL.md");
+            let skill = Skill::from_skill_md(&skill_md_path)?;
+            self.skills.push(skill);
         }
 
         Ok(self)
@@ -124,8 +125,8 @@ impl SkillsPlugin {
     ///     .expect("failed to load");
     ///
     /// // Attach tools to a specific skill after loading
-    /// // if let Some(skill) = plugin.skill_mut("code_review") {
-    /// //     skill.with_tool(my_tool);
+    /// // if let Some(skill) = plugin.skill_mut("code-review") {
+    /// //     // skill = skill.with_tool(my_tool);
     /// // }
     /// ```
     pub fn skill_mut(&mut self, name: &str) -> Option<&mut Skill> {
@@ -149,19 +150,34 @@ impl Plugin for SkillsPlugin {
             .collect()
     }
 
+    /// Returns context for progressive disclosure.
+    ///
+    /// For skills where `disable_model_invocation` is false, the
+    /// description and full instructions are included. Skills with
+    /// `disable_model_invocation` set to true are excluded from
+    /// automatic context (they require explicit invocation).
     fn context(&self) -> Vec<String> {
         self.skills
             .iter()
-            .filter(|s| !s.instructions.is_empty())
+            .filter(|s| !s.disable_model_invocation)
+            .filter(|s| !s.instructions.is_empty() || !s.description.is_empty())
             .map(|s| {
+                let mut parts = Vec::new();
+
+                // Header
                 if s.description.is_empty() {
-                    format!("## Skill: {}\n\n{}", s.name, s.instructions)
+                    parts.push(format!("## Skill: {}", s.name));
                 } else {
-                    format!(
-                        "## Skill: {} — {}\n\n{}",
-                        s.name, s.description, s.instructions
-                    )
+                    parts.push(format!("## Skill: {} — {}", s.name, s.description));
                 }
+
+                // Instructions
+                if !s.instructions.is_empty() {
+                    parts.push(String::new());
+                    parts.push(s.instructions.clone());
+                }
+
+                parts.join("\n")
             })
             .collect()
     }
@@ -240,14 +256,32 @@ mod tests {
             .with_skill(Skill::new("s3", "Skill 3").with_instructions("Instructions for skill 3."));
 
         let context = plugin.context();
-        assert_eq!(context.len(), 2); // s2 has no instructions, excluded
+        // s2 has description but no instructions, still included for description
+        assert_eq!(context.len(), 3);
 
         assert!(context[0].contains("Skill: s1"));
-        assert!(context[0].contains("Skill 1"));
         assert!(context[0].contains("Instructions for skill 1."));
 
-        assert!(context[1].contains("Skill: s3"));
-        assert!(context[1].contains("Instructions for skill 3."));
+        assert!(context[1].contains("Skill: s2"));
+        assert!(context[1].contains("Skill 2"));
+
+        assert!(context[2].contains("Skill: s3"));
+        assert!(context[2].contains("Instructions for skill 3."));
+    }
+
+    #[test]
+    fn skills_plugin_excludes_disable_model_invocation() {
+        let plugin = SkillsPlugin::new("test", "Test")
+            .with_skill(Skill::new("visible", "Visible skill").with_instructions("Visible."))
+            .with_skill(
+                Skill::new("hidden", "Hidden skill")
+                    .with_instructions("Hidden.")
+                    .with_disable_model_invocation(true),
+            );
+
+        let context = plugin.context();
+        assert_eq!(context.len(), 1);
+        assert!(context[0].contains("visible"));
     }
 
     #[test]
@@ -261,14 +295,34 @@ mod tests {
     }
 
     #[test]
-    fn skills_plugin_load_dir() {
-        let dir = std::env::temp_dir().join("membrane_test_skills");
+    fn skills_plugin_load_skill_dirs() {
+        let dir = std::env::temp_dir().join("membrane_test_skills_v2");
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create test dir");
 
-        std::fs::write(dir.join("alpha.md"), "Alpha instructions").expect("write");
-        std::fs::write(dir.join("beta.md"), "Beta instructions").expect("write");
-        std::fs::write(dir.join("not_a_skill.txt"), "Ignored").expect("write");
+        // Create skill directories with SKILL.md
+        let alpha_dir = dir.join("alpha");
+        std::fs::create_dir_all(&alpha_dir).expect("create alpha dir");
+        std::fs::write(
+            alpha_dir.join("SKILL.md"),
+            "---\nname: alpha\ndescription: Alpha skill\n---\n\nAlpha instructions.",
+        )
+        .expect("write alpha");
+
+        let beta_dir = dir.join("beta");
+        std::fs::create_dir_all(&beta_dir).expect("create beta dir");
+        std::fs::write(
+            beta_dir.join("SKILL.md"),
+            "---\ndescription: Beta skill\nallowed-tools: Read, Grep\n---\n\nBeta instructions.",
+        )
+        .expect("write beta");
+
+        // Directory without SKILL.md should be ignored
+        let ignored_dir = dir.join("no-skill");
+        std::fs::create_dir_all(&ignored_dir).expect("create ignored dir");
+        std::fs::write(ignored_dir.join("README.md"), "Not a skill").expect("write ignored");
+
+        // File (not dir) should be ignored
+        std::fs::write(dir.join("stray.md"), "Not a skill dir").expect("write stray");
 
         let plugin = SkillsPlugin::new("test", "Test")
             .load_skills_dir(&dir)
@@ -277,12 +331,17 @@ mod tests {
         assert_eq!(plugin.skills().len(), 2);
 
         let names: Vec<&str> = plugin.skills().iter().map(|s| s.name()).collect();
-        assert_eq!(names, vec!["alpha", "beta"]); // sorted
+        assert_eq!(names, vec!["alpha", "beta"]); // sorted by dir name
+
+        // Beta should get name from directory
+        assert_eq!(plugin.skills()[1].name(), "beta");
+        assert_eq!(plugin.skills()[1].description(), "Beta skill");
+        assert_eq!(plugin.skills()[1].allowed_tools(), &["Read", "Grep"]);
 
         let context = plugin.context();
         assert_eq!(context.len(), 2);
-        assert!(context[0].contains("Alpha instructions"));
-        assert!(context[1].contains("Beta instructions"));
+        assert!(context[0].contains("Alpha instructions."));
+        assert!(context[1].contains("Beta instructions."));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
