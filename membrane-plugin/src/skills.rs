@@ -57,6 +57,7 @@ use crate::skill::Skill;
 pub struct SkillsPlugin {
     name: String,
     description: String,
+    instructions: Option<String>,
     skills: Vec<Skill>,
 }
 
@@ -66,8 +67,19 @@ impl SkillsPlugin {
         Self {
             name: name.into(),
             description: description.into(),
+            instructions: None,
             skills: Vec::new(),
         }
+    }
+
+    /// Set default instructions for this plugin.
+    ///
+    /// These instructions are included as the first context entry,
+    /// before any individual skill contexts. Useful for providing
+    /// shared guidelines or rules that apply to all skills.
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
     }
 
     /// Add a skill to this plugin.
@@ -157,29 +169,39 @@ impl Plugin for SkillsPlugin {
     /// `disable_model_invocation` set to true are excluded from
     /// automatic context (they require explicit invocation).
     fn context(&self) -> Vec<String> {
-        self.skills
-            .iter()
-            .filter(|s| !s.disable_model_invocation)
-            .filter(|s| !s.instructions.is_empty() || !s.description.is_empty())
-            .map(|s| {
-                let mut parts = Vec::new();
+        let mut contexts = Vec::new();
 
-                // Header
-                if s.description.is_empty() {
-                    parts.push(format!("## Skill: {}", s.name));
-                } else {
-                    parts.push(format!("## Skill: {} — {}", s.name, s.description));
-                }
+        if let Some(instructions) = &self.instructions {
+            contexts.push(instructions.clone());
+        }
 
-                // Instructions
-                if !s.instructions.is_empty() {
-                    parts.push(String::new());
-                    parts.push(s.instructions.clone());
-                }
+        contexts.extend(
+            self.skills
+                .iter()
+                .filter(|s| !s.disable_model_invocation)
+                .filter(|s| !s.instructions.is_empty() || !s.description.is_empty())
+                .map(|s| {
+                    let mut parts = Vec::new();
 
-                parts.join("\n")
-            })
-            .collect()
+                    // Header
+                    if s.description.is_empty() {
+                        parts.push(format!("## Skill: {}", s.name));
+                    } else {
+                        parts.push(format!("## Skill: {} — {}", s.name, s.description));
+                    }
+
+                    // Instructions
+                    if !s.instructions.is_empty() {
+                        parts.push(String::new());
+                        parts.push(s.instructions.clone());
+                    }
+
+                    parts.join("\n")
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        contexts
     }
 }
 
@@ -369,5 +391,27 @@ mod tests {
         assert!(plugin.skill_mut("s1").is_some());
         assert!(plugin.skill_mut("s2").is_some());
         assert!(plugin.skill_mut("s3").is_none());
+    }
+
+    #[test]
+    fn skills_plugin_default_instructions() {
+        let plugin = SkillsPlugin::new("test", "Test")
+            .with_instructions("Always respond in Japanese.")
+            .with_skill(Skill::new("s1", "Skill 1").with_instructions("Do something."));
+
+        let context = plugin.context();
+        assert_eq!(context.len(), 2);
+        assert_eq!(context[0], "Always respond in Japanese.");
+        assert!(context[1].contains("Skill: s1"));
+    }
+
+    #[test]
+    fn skills_plugin_no_default_instructions() {
+        let plugin = SkillsPlugin::new("test", "Test")
+            .with_skill(Skill::new("s1", "Skill 1").with_instructions("Do something."));
+
+        let context = plugin.context();
+        assert_eq!(context.len(), 1);
+        assert!(context[0].contains("Skill: s1"));
     }
 }
