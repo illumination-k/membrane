@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 /// Parsed YAML frontmatter from a SKILL.md file.
 ///
 /// Frontmatter is delimited by `---` lines at the beginning of a markdown file:
@@ -14,17 +12,21 @@ use std::collections::BTreeMap;
 ///
 /// Markdown content here...
 /// ```
+///
+/// The YAML block is parsed using `serde_yaml`. Values can be accessed
+/// as strings, booleans, or lists via typed accessors.
 #[derive(Debug, Clone, Default)]
 pub struct Frontmatter {
-    fields: BTreeMap<String, String>,
+    mapping: serde_yaml::Mapping,
 }
 
 impl Frontmatter {
     /// Parse YAML frontmatter from markdown content.
     ///
     /// Returns `(frontmatter, body)` where `body` is the markdown content
-    /// after the closing `---` delimiter. If no frontmatter is found,
-    /// returns an empty `Frontmatter` and the original content.
+    /// after the closing `---` delimiter. If no frontmatter is found or
+    /// the YAML is invalid, returns an empty `Frontmatter` and the original
+    /// content.
     pub fn parse(content: &str) -> (Self, &str) {
         let trimmed = content.trim_start();
 
@@ -45,59 +47,56 @@ impl Frontmatter {
         let body_start = &after_open[close_pos + 4..]; // skip "\n---"
         let body = body_start.strip_prefix('\n').unwrap_or(body_start);
 
-        let mut fields = BTreeMap::new();
+        let mapping = serde_yaml::from_str::<serde_yaml::Mapping>(yaml_block).unwrap_or_default();
 
-        for line in yaml_block.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            if let Some((key, value)) = line.split_once(':') {
-                let key = key.trim().to_string();
-                let value = value.trim();
-                // Strip surrounding quotes
-                let value = value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-                    .unwrap_or(value)
-                    .to_string();
-                fields.insert(key, value);
-            }
-        }
-
-        (Self { fields }, body)
+        (Self { mapping }, body)
     }
 
-    /// Get a string field value.
+    /// Get a field value as a string.
+    ///
+    /// For non-string YAML values, the raw YAML representation is returned.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.fields.get(key).map(|s| s.as_str())
+        self.mapping
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_str())
     }
 
     /// Get a boolean field value.
     ///
     /// Returns `None` if the field is not present.
-    /// Returns `Some(true)` for "true", `Some(false)` for "false".
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.fields.get(key).map(|v| v.eq_ignore_ascii_case("true"))
+        self.mapping
+            .get(serde_yaml::Value::String(key.to_string()))
+            .and_then(|v| v.as_bool())
     }
 
-    /// Get a comma-separated or space-separated list field.
+    /// Get a list field.
     ///
-    /// The Agent Skills spec uses space-delimited lists, while Claude Code
-    /// uses comma-separated. This method handles both.
+    /// Handles multiple YAML representations:
+    /// - YAML sequence: `[Read, Grep, Glob]`
+    /// - Comma-separated string: `"Read, Grep, Glob"` (Claude Code convention)
+    /// - Space-delimited string: `"Read Grep Glob"` (Agent Skills spec)
     pub fn get_list(&self, key: &str) -> Vec<String> {
-        self.fields
-            .get(key)
-            .map(|v| {
-                if v.contains(',') {
-                    v.split(',').map(|s| s.trim().to_string()).collect()
+        let Some(value) = self.mapping.get(serde_yaml::Value::String(key.to_string())) else {
+            return Vec::new();
+        };
+
+        match value {
+            // YAML sequence: [Read, Grep, Glob]
+            serde_yaml::Value::Sequence(seq) => seq
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            // String: comma or space separated
+            serde_yaml::Value::String(s) => {
+                if s.contains(',') {
+                    s.split(',').map(|s| s.trim().to_string()).collect()
                 } else {
-                    v.split_whitespace().map(|s| s.to_string()).collect()
+                    s.split_whitespace().map(|s| s.to_string()).collect()
                 }
-            })
-            .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -160,6 +159,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_yaml_sequence_list() {
+        let content = "---\nallowed-tools:\n  - Read\n  - Grep\n  - Glob\n---\nBody";
+        let (fm, _body) = Frontmatter::parse(content);
+
+        assert_eq!(fm.get_list("allowed-tools"), vec!["Read", "Grep", "Glob"]);
+    }
+
+    #[test]
+    fn parse_yaml_inline_sequence() {
+        let content = "---\nallowed-tools: [Read, Grep, Glob]\n---\nBody";
+        let (fm, _body) = Frontmatter::parse(content);
+
+        assert_eq!(fm.get_list("allowed-tools"), vec!["Read", "Grep", "Glob"]);
+    }
+
+    #[test]
     fn parse_empty_list() {
         let content = "---\nname: test\n---\nBody";
         let (fm, _body) = Frontmatter::parse(content);
@@ -176,7 +191,7 @@ description: Reviews code for quality
 allowed-tools: Read, Grep, Glob
 user-invocable: true
 disable-model-invocation: false
-argument-hint: [filename]
+argument-hint: \"[filename]\"
 model: claude-sonnet-4-5-20250929
 context: fork
 agent: Explore

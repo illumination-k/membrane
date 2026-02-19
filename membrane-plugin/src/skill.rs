@@ -297,20 +297,19 @@ mod tests {
 
     #[test]
     fn parse_skill_md_full_frontmatter() {
-        let content = "\
----
+        let content = r#"---
 name: code-review
 description: Reviews code for quality
 allowed-tools: Read, Grep, Glob
 user-invocable: true
 disable-model-invocation: false
-argument-hint: [filename]
+argument-hint: "[filename]"
 model: claude-sonnet-4-5-20250929
 context: fork
 agent: Explore
 ---
 
-Review the code for correctness.";
+Review the code for correctness."#;
 
         let skill = Skill::parse(content);
 
