@@ -44,11 +44,12 @@ membrane/
   - `frontmatter.rs` — YAML frontmatter parser for SKILL.md files
   - `skill.rs` — Skill struct with full spec fields (name, description, allowed-tools, user-invocable, disable-model-invocation, argument-hint, model, context, agent), `from_skill_md()`, `invoke()` for argument substitution
   - `skills.rs` — SkillsPlugin implementing Plugin trait, `load_skills_dir()` for `<name>/SKILL.md` directory loading
-- **membrane-tools**: Built-in tools using `#[membrane_tool]` macro
+- **membrane-tools**: Built-in tools using `#[membrane_tool]` macro or manual `Tool` impl
   - `read_file.rs` — ReadFileTool (offset/limit support)
   - `write_file.rs` — WriteFileTool (auto directory creation)
   - `search_files.rs` — SearchFilesTool (glob pattern matching)
   - `exec.rs` — ExecTool (shell command execution)
+  - `task_list.rs` — TaskListWriteTool + TaskListReadTool (shared-state task tracking via `Arc<Mutex<>>`, created together with `task_list_tools()`)
 - `extern crate self as membrane_core;` in lib.rs enables macro-generated `membrane_core::` paths to resolve inside the crate itself
 
 ## Commands
