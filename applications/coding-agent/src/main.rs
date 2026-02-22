@@ -10,9 +10,12 @@ use membrane_core::agent::{Agent, AgentConfig, AgentStep};
 use membrane_core::message::Message;
 use membrane_core::stop_condition::{MaxConsecutiveErrors, Timeout, TokenBudget};
 use membrane_openai::OpenAiProvider;
-use membrane_tools::{ReadFileTool, SearchFilesTool, WriteFileTool, task_list_tools};
+use membrane_tools::{
+    EditFileTool, GrepTool, ListDirTool, ReadFileTool, SearchFilesTool, WriteFileTool,
+    task_list_tools,
+};
 
-use tools::{BashTool, EditFileTool, GrepTool, ListDirTool};
+use tools::BashTool;
 
 #[derive(Parser)]
 #[command(
