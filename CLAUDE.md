@@ -15,6 +15,7 @@ Update `CLAUDE.md` and `DESIGN_DOC.md` when session is complete.
 membrane/
 ├── membrane-core/       # Core traits, types, agent loop, re-exports macro
 ├── membrane-macros/     # Proc macro crate (#[membrane_tool])
+├── membrane-mcp/        # MCP (Model Context Protocol) client integration via rmcp
 ├── membrane-openai/     # OpenAI Chat Completions API provider
 ├── membrane-plugin/     # Plugin system (SkillsPlugin, skills loader)
 ├── membrane-tools/      # Built-in utility tools (file I/O, exec, search)
@@ -88,3 +89,8 @@ cargo test -p membrane-core
 - `#[membrane_tool]` macro generates `{FnNamePascalCase}Tool` struct + `Tool` impl from async functions
 - `Plugin` trait provides `tools(&mut self)` (drain semantics) and `context(&self)` (system messages); `Agent::with_plugin()` integrates both
 - `SkillsPlugin` bundles multiple `Skill`s; follows Agent Skills open standard (`<name>/SKILL.md` with YAML frontmatter); supports `invoke()` for `$ARGUMENTS`/`$N` substitution; `disable-model-invocation` skills excluded from automatic context
+- **membrane-mcp**: MCP (Model Context Protocol) client integration using `rmcp` crate
+  - `tool.rs` — `McpTool` wrapper bridging remote MCP tools to membrane `Tool` trait; holds `Arc<RunningService>` for shared connection
+  - `transport.rs` — `McpTransport` enum (Stdio / StreamableHttp), `McpServerConfig`, `McpPlugin` implementing `Plugin` trait
+  - `McpPlugin::connect()` establishes connection, discovers tools via `list_all_tools()`, wraps each as `McpTool`
+  - Supports stdio (child process) and Streamable HTTP transports

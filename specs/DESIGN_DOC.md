@@ -29,6 +29,7 @@
 membrane/
 ├── membrane-core/       # Core traits, types, agent loop, re-exports macro
 ├── membrane-macros/     # Proc macro crate (#[membrane_tool])
+├── membrane-mcp/        # MCP (Model Context Protocol) client integration via rmcp
 ├── membrane-openai/     # OpenAI Chat Completions API provider
 ├── membrane-tools/      # Built-in utility tools (file I/O, exec, search)
 ├── examples/            # Example applications
@@ -44,6 +45,7 @@ membrane/
 ```
 membrane-core:      serde, serde_json, schemars, tracing, thiserror, membrane-macros
 membrane-macros:    proc-macro2, quote, syn
+membrane-mcp:       membrane-core, rmcp (client, transports), serde_json, tokio, tracing
 membrane-openai:    membrane-core, reqwest, tokio (HTTP通信用)
 membrane-tools:     membrane-core, glob, schemars, serde, serde_json
 ```
@@ -542,6 +544,45 @@ let provider = OpenAiProvider::builder()
 
 ---
 
+## MCP Integration (membrane-mcp)
+
+Model Context Protocol (MCP) のクライアント統合。`rmcp` クレートを使用して外部 MCP サーバーのツールを membrane Agent から透過的に利用可能にする。
+
+### アーキテクチャ
+
+MCP サーバーへの接続を `Plugin` trait として実装し、既存の Agent builder パターンにそのまま組み込める。
+
+```rust
+use membrane_mcp::{McpPlugin, McpServerConfig, McpTransport};
+
+let plugin = McpPlugin::connect(McpServerConfig {
+    name: "git".to_string(),
+    transport: McpTransport::Stdio {
+        command: "uvx".to_string(),
+        args: vec!["mcp-server-git".to_string()],
+    },
+}).await?;
+
+let agent = Agent::with_system_prompt(provider, vec![], config, "...")
+    .with_plugin(plugin);
+```
+
+### コンポーネント
+
+- **`McpTransport`** — 接続方式の enum。`Stdio` (子プロセス stdio) と `StreamableHttp` (HTTP) をサポート
+- **`McpServerConfig`** — サーバー名とトランスポート設定
+- **`McpPlugin`** — `Plugin` trait を実装。`connect()` でサーバーに接続し、`list_all_tools()` でツールを取得、各ツールを `McpTool` としてラップ
+- **`McpTool`** — `Tool` trait を実装。`Arc<RunningService>` を共有し、`call_tool()` でリモート実行。MCP の `Content` からテキストを抽出して `String` として返す
+
+### トランスポート
+
+| 種類 | rmcp feature | 用途 |
+|------|-------------|------|
+| Stdio (子プロセス) | `transport-child-process` | ローカルの MCP サーバーを子プロセスとして起動 |
+| Streamable HTTP | `transport-streamable-http-client-reqwest` | リモートの MCP サーバーに HTTP で接続 |
+
+---
+
 ## Observability
 
 全レイヤーで `tracing` を活用する。
@@ -650,7 +691,14 @@ pub struct ErrorInfo {
 - `sub_agent.run` tracing span
 - テスト（MockProvider ベースの親子 Agent テスト）
 
-### Phase 9: 拡張（未実装）
+### Phase 9: MCP Integration ✅
+- `membrane-mcp` クレート
+- `rmcp` を使った MCP クライアント統合
+- `McpTool` — リモート MCP ツールを membrane `Tool` trait にブリッジ
+- `McpPlugin` — `Plugin` trait 実装、サーバー接続・ツール発見・ラップ
+- Stdio（子プロセス）と Streamable HTTP トランスポートをサポート
+
+### Phase 10: 拡張（未実装）
 - membrane-anthropic クレート（Messages API）
 - Streaming 対応
 
