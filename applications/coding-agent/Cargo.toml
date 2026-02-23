@@ -1,0 +1,20 @@
+[package]
+name = "coding-agent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+membrane-core = { path = "../../membrane-core" }
+membrane-openai = { path = "../../membrane-openai" }
+membrane-tools = { path = "../../membrane-tools" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

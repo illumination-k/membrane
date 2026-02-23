@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "applications/coding-agent",
   "applications/research-agents",
   "examples",
   "membrane-core",
