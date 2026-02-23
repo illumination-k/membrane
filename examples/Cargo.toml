@@ -13,7 +13,16 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# OpenTelemetry (used by otel example)
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry-otlp = { version = "0.31", features = ["trace", "http-proto", "reqwest-client"], optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+
+[features]
+otel = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 
 [lints]
 workspace = true

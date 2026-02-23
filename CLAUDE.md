@@ -82,7 +82,7 @@ cargo test -p membrane-core
 - `AgentConfig.extra_params` and `ChatRequest.extra_params` (`serde_json::Map`) are `#[serde(flatten)]`-ed into API requests for provider-specific params (temperature, max_tokens, etc.)
 - `AgentStopReason` enum distinguishes NaturalStop / MaxIterations / StopCondition (max_iterations is not an error)
 - `StopCondition` trait with `or()`/`and()` combinators for composable early termination
-- Observability via `tracing` crate spans (`agent.run` → `iteration` → `llm.chat` / `tool.exec`)
+- Observability via `tracing` crate spans (`agent.run` → `iteration` → `llm.chat` / `tool.exec`); OpenTelemetry export supported via `tracing-opentelemetry` at application level (see `examples/src/bin/otel.rs` and `examples/docker-compose.otel.yml`)
 - Structured output uses `schemars::JsonSchema` for automatic JSON Schema generation
 - Provider crates use builder pattern for construction (e.g. `OpenAiProvider::builder().api_key("...").build()`)
 - `TokenProvider` trait enables dynamic auth (e.g. Azure AD token refresh)
