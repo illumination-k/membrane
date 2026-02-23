@@ -19,6 +19,8 @@ membrane/
 ├── membrane-openai/     # OpenAI Chat Completions API provider
 ├── membrane-plugin/     # Plugin system (SkillsPlugin, skills loader)
 ├── membrane-tools/      # Built-in utility tools (file I/O, exec, search)
+├── evals/               # Evaluation harnesses
+│   └── bfcl/            # BFCL (Berkeley Function Calling Leaderboard) eval
 ├── examples/            # Example applications
 ├── applications/        # Standalone agent applications
 │   └── research-agents/ # Research agent CLI (WIP)
@@ -51,6 +53,12 @@ membrane/
   - `search_files.rs` — SearchFilesTool (glob pattern matching)
   - `exec.rs` — ExecTool (shell command execution)
   - `task_list.rs` — TaskListWriteTool + TaskListReadTool (shared-state task tracking via `Arc<Mutex<>>`, created together with `task_list_tools()`)
+- **evals/bfcl**: BFCL evaluation harness (CLI binary)
+  - `types.rs` — BFCL data types (TestEntry, FunctionDef, GroundTruth, EvalResult)
+  - `convert.rs` — BFCL-to-membrane conversion (FunctionDef → ToolDefinition, schema type normalization `dict`→`object`)
+  - `eval.rs` — AST-based evaluation (parameter matching with type coercion, irrelevance detection)
+  - `runner.rs` — Evaluation orchestrator (load JSONL data, call LLM via `LlmProvider::chat`, score results)
+  - `main.rs` — CLI with `--category`, `--model`, `--data-dir`, `--limit` flags; supports `all` to run all single-turn categories
 - `extern crate self as membrane_core;` in lib.rs enables macro-generated `membrane_core::` paths to resolve inside the crate itself
 
 ## Commands
