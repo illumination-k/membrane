@@ -610,6 +610,48 @@ agent.run          [span]          ← Agent 全体の実行 (model名を記録)
 - tracing subscriber の選択はユーザーに任せる（`tracing-subscriber`, OpenTelemetry 等）
 - ライブラリ側では `tracing::instrument` と `tracing::event!` のみ使用
 
+### OpenTelemetry Integration
+
+ライブラリは `tracing` クレートのみに依存し、OpenTelemetry への直接依存は持たない。
+ユーザーはアプリケーション側で `tracing-opentelemetry` を使って OTLP エクスポートを設定する。
+
+```
+tracing spans → tracing-opentelemetry → opentelemetry-otlp → OTLP Collector → Grafana Tempo
+```
+
+アプリケーション側の設定例（`examples/src/bin/otel.rs` に完全な例あり）:
+
+```rust
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry::trace::TracerProvider as _;
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+let exporter = SpanExporter::builder()
+    .with_http()
+    .with_endpoint("http://localhost:4318")
+    .build()?;
+
+let provider = SdkTracerProvider::builder()
+    .with_batch_exporter(exporter)
+    .build();
+
+let tracer = provider.tracer("membrane-agent");
+
+tracing_subscriber::registry()
+    .with(tracing_subscriber::fmt::layer())
+    .with(OpenTelemetryLayer::new(tracer))
+    .init();
+
+// ... agent の実行 ...
+
+provider.shutdown()?; // トレースをフラッシュ
+```
+
+ローカルの Grafana + Tempo 環境は `docker compose -f examples/docker-compose.otel.yml up -d` で起動できる。
+
 ---
 
 ## Error Handling

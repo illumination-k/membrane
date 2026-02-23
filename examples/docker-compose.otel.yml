@@ -1,0 +1,44 @@
+# Local observability stack for membrane agent tracing.
+#
+# Start:  docker compose -f examples/docker-compose.otel.yml up -d
+# Stop:   docker compose -f examples/docker-compose.otel.yml down
+# UI:     http://localhost:3000 (Grafana, no login required)
+#
+# Architecture:
+#   membrane agent → OTLP HTTP (:4318) → Grafana Alloy → Tempo → Grafana
+#
+# Alloy is Grafana's OpenTelemetry-compatible collector that receives OTLP
+# traces and forwards them to Tempo for storage and querying.
+
+services:
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./otel-config/tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "3200:3200" # Tempo query API
+
+  alloy:
+    image: grafana/alloy:latest
+    command: ["run", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./otel-config/alloy-config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+    depends_on:
+      - tempo
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./otel-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "3000:3000" # Grafana UI
+    depends_on:
+      - tempo

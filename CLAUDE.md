@@ -19,6 +19,8 @@ membrane/
 ├── membrane-openai/     # OpenAI Chat Completions API provider
 ├── membrane-plugin/     # Plugin system (SkillsPlugin, skills loader)
 ├── membrane-tools/      # Built-in utility tools (file I/O, exec, search)
+├── evals/               # Evaluation harnesses
+│   └── bfcl/            # BFCL (Berkeley Function Calling Leaderboard) eval
 ├── examples/            # Example applications
 ├── applications/        # Standalone agent applications
 │   └── research-agents/ # Research agent CLI (WIP)
@@ -51,6 +53,12 @@ membrane/
   - `search_files.rs` — SearchFilesTool (glob pattern matching)
   - `exec.rs` — ExecTool (shell command execution)
   - `task_list.rs` — TaskListWriteTool + TaskListReadTool (shared-state task tracking via `Arc<Mutex<>>`, created together with `task_list_tools()`)
+- **evals/bfcl**: BFCL evaluation harness (CLI binary)
+  - `types.rs` — BFCL data types (TestEntry, FunctionDef, GroundTruth, EvalResult)
+  - `convert.rs` — BFCL-to-membrane conversion (FunctionDef → ToolDefinition, schema type normalization `dict`→`object`)
+  - `eval.rs` — AST-based evaluation (parameter matching with type coercion, irrelevance detection)
+  - `runner.rs` — Evaluation orchestrator (load JSONL data, call LLM via `LlmProvider::chat`, score results)
+  - `main.rs` — CLI with `--category`, `--model`, `--data-dir`, `--limit` flags; supports `all` to run all single-turn categories
 - `extern crate self as membrane_core;` in lib.rs enables macro-generated `membrane_core::` paths to resolve inside the crate itself
 
 ## Commands
@@ -82,7 +90,7 @@ cargo test -p membrane-core
 - `AgentConfig.extra_params` and `ChatRequest.extra_params` (`serde_json::Map`) are `#[serde(flatten)]`-ed into API requests for provider-specific params (temperature, max_tokens, etc.)
 - `AgentStopReason` enum distinguishes NaturalStop / MaxIterations / StopCondition (max_iterations is not an error)
 - `StopCondition` trait with `or()`/`and()` combinators for composable early termination
-- Observability via `tracing` crate spans (`agent.run` → `iteration` → `llm.chat` / `tool.exec`)
+- Observability via `tracing` crate spans (`agent.run` → `iteration` → `llm.chat` / `tool.exec`); OpenTelemetry export supported via `tracing-opentelemetry` at application level (see `examples/src/bin/otel.rs` and `examples/docker-compose.otel.yml`)
 - Structured output uses `schemars::JsonSchema` for automatic JSON Schema generation
 - Provider crates use builder pattern for construction (e.g. `OpenAiProvider::builder().api_key("...").build()`)
 - `TokenProvider` trait enables dynamic auth (e.g. Azure AD token refresh)
